@@ -475,6 +475,197 @@ class BrowserController: ObservableObject {
         let records = await dataStore.dataRecords(ofTypes: types)
         await dataStore.removeData(ofTypes: types, for: records)
     }
+
+    // MARK: - Selector Resilience
+
+    /// Wait for any of the provided selectors to appear
+    /// Returns the selector that matched
+    func waitForAnySelector(_ selectors: [String], timeout: TimeInterval = 10) async throws -> String {
+        let startTime = Date()
+        let escapedSelectors = selectors.map { $0.escapedForJS }
+        let selectorList = escapedSelectors.map { "'\($0)'" }.joined(separator: ", ")
+
+        while Date().timeIntervalSince(startTime) < timeout {
+            let script = """
+            (function() {
+                const selectors = [\(selectorList)];
+                for (const sel of selectors) {
+                    if (document.querySelector(sel)) return sel;
+                }
+                return null;
+            })();
+            """
+
+            if let found = try await evaluateJavaScript(script) as? String {
+                return found
+            }
+            try await Task.sleep(nanoseconds: 250_000_000) // 250ms
+        }
+
+        throw BrowserError.selectorChainExhausted(selectors)
+    }
+
+    /// Resolve a selector chain, trying each selector in order
+    /// Returns the first matching selector and its extracted value
+    func resolveSelector(_ chain: SelectorChain, extract: String = "textContent") async -> ExtractionResult {
+        var attempts = 0
+
+        // Try each selector in the chain
+        for (index, selector) in chain.chain.enumerated() {
+            attempts += 1
+            let escapedSelector = selector.escapedForJS
+
+            let script = """
+            (function() {
+                const el = document.querySelector('\(escapedSelector)');
+                if (!el) return null;
+                return el.\(extract)?.trim() || null;
+            })();
+            """
+
+            if let value = try? await evaluateJavaScript(script), !(value is NSNull) {
+                let transformedValue = applyTransform(value, chain.transform)
+                return ExtractionResult(
+                    value: transformedValue,
+                    selectorUsed: selector,
+                    wasFallback: index > 0,
+                    attempts: attempts,
+                    success: true
+                )
+            }
+        }
+
+        // Try fallback script if all selectors failed
+        if let fallbackScript = chain.fallbackScript {
+            attempts += 1
+            if let value = try? await evaluateJavaScript(fallbackScript), !(value is NSNull) {
+                let transformedValue = applyTransform(value, chain.transform)
+                return ExtractionResult(
+                    value: transformedValue,
+                    selectorUsed: "fallbackScript",
+                    wasFallback: true,
+                    attempts: attempts,
+                    success: true
+                )
+            }
+        }
+
+        return ExtractionResult(
+            value: nil,
+            selectorUsed: "none",
+            wasFallback: true,
+            attempts: attempts,
+            success: false
+        )
+    }
+
+    /// Apply a JavaScript transform to a value
+    private func applyTransform(_ value: Any?, _ transform: String?) -> Any? {
+        guard let transform = transform, let value = value else {
+            return value
+        }
+
+        // Simple transforms we can do in Swift
+        if let str = value as? String {
+            if transform.contains("trim()") {
+                return str.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if transform.contains("split('\\n')[0]") {
+                return str.components(separatedBy: "\n").first ?? str
+            }
+            if transform.contains("parseFloat") {
+                let cleaned = str.replacingOccurrences(of: "[^0-9.]", with: "", options: .regularExpression)
+                return Double(cleaned)
+            }
+        }
+
+        return value
+    }
+
+    /// Execute with retry strategies
+    func executeWithRetry(
+        action: @escaping () async throws -> Any?,
+        strategies: [RetryStrategy],
+        maxAttempts: Int = 3
+    ) async throws -> Any? {
+        var lastError: Error?
+        var attempt = 0
+
+        // First attempt without any strategy
+        do {
+            return try await action()
+        } catch {
+            lastError = error
+        }
+
+        // Retry with each strategy
+        for strategy in strategies {
+            attempt += 1
+            if attempt > maxAttempts { break }
+
+            // Apply retry strategy
+            switch strategy {
+            case .scroll:
+                _ = try? await evaluateJavaScript("window.scrollTo(0, document.body.scrollHeight / 2)")
+                try await Task.sleep(nanoseconds: 500_000_000) // 500ms
+
+            case .wait:
+                try await Task.sleep(nanoseconds: 2_000_000_000) // 2s
+
+            case .reload:
+                reload()
+                _ = await waitForNavigation()
+
+            case .viewport:
+                // Not implemented for iOS - would need simulator resize
+                break
+            }
+
+            // Retry the action
+            do {
+                return try await action()
+            } catch {
+                lastError = error
+                continue
+            }
+        }
+
+        throw lastError ?? BrowserError.timeout("Retry exhausted")
+    }
+
+    /// Capture failure artifacts for debugging
+    func captureFailureArtifacts(
+        failedSelector: String,
+        triedSelectors: [String],
+        error: String
+    ) async -> FailureArtifacts {
+        async let screenshot = try? takeScreenshot()
+        async let pdf = try? takeFullPageScreenshot()
+        async let dom = getDOMSnapshot()
+
+        return FailureArtifacts(
+            screenshot: await screenshot,
+            fullPagePdf: await pdf,
+            domSnapshot: await dom,
+            failedSelector: failedSelector,
+            triedSelectors: triedSelectors,
+            timestamp: Date(),
+            error: error
+        )
+    }
+
+    /// Get a snapshot of the current DOM
+    func getDOMSnapshot() async -> String? {
+        let script = "document.documentElement.outerHTML"
+        return try? await evaluateJavaScript(script) as? String
+    }
+
+    /// Get console logs (if available)
+    func getConsoleLogs() async -> [String] {
+        // Note: This would require injecting a console capture script earlier
+        // For now, return empty array
+        return []
+    }
 }
 
 // MARK: - Navigation Delegate
@@ -527,6 +718,7 @@ enum BrowserError: LocalizedError {
     case noEditableElement
     case timeout(String)
     case javascriptError(String)
+    case selectorChainExhausted([String])
 
     var errorDescription: String? {
         switch self {
@@ -540,6 +732,8 @@ enum BrowserError: LocalizedError {
             return "Timeout: \(message)"
         case .javascriptError(let message):
             return "JavaScript error: \(message)"
+        case .selectorChainExhausted(let selectors):
+            return "No selector matched: \(selectors.joined(separator: ", "))"
         }
     }
 }

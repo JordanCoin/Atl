@@ -1,0 +1,55 @@
+{
+  "id": "amazon-price-watch-airpods",
+  "name": "AirPods Pro Price Monitor",
+  "description": "Monitor AirPods Pro price on Amazon (mobile-optimized)",
+  "schedule": "0 */4 * * *",
+  "profile": "amazon-default",
+  "alertThreshold": {
+    "priceBelow": 200
+  },
+  "steps": [
+    {
+      "id": "load-product",
+      "action": "goto",
+      "params": { "url": "https://www.amazon.com/dp/B0D1XD1ZV3" }
+    },
+    {
+      "id": "wait-for-page",
+      "action": "waitForNavigation",
+      "params": {}
+    },
+    {
+      "id": "extract-title",
+      "action": "evaluate",
+      "params": { "script": "document.querySelector('#title, #productTitle, h1')?.textContent?.trim()?.split('\\n')[0] || document.title.split(':')[0].trim() || 'Unknown'" },
+      "saveAs": "productTitle"
+    },
+    {
+      "id": "extract-price",
+      "action": "evaluate",
+      "params": { "script": "parseFloat(document.body.innerText.match(/\\$([0-9]+\\.?[0-9]*)/)?.[1]) || null" },
+      "saveAs": "currentPrice"
+    },
+    {
+      "id": "extract-availability",
+      "action": "evaluate",
+      "params": { "script": "document.body.innerText.includes('In Stock') ? 'In Stock' : document.body.innerText.includes('Add to Cart') ? 'Available' : 'Unknown'" },
+      "saveAs": "availability"
+    },
+    {
+      "id": "capture-proof",
+      "action": "screenshot",
+      "params": { "fullPage": true },
+      "saveAs": "proofPdf"
+    }
+  ],
+  "alerts": {
+    "slack": {
+      "webhook": "${SLACK_WEBHOOK_URL}",
+      "channel": "#price-alerts"
+    },
+    "email": {
+      "to": ["alerts@company.com"]
+    }
+  }
+}

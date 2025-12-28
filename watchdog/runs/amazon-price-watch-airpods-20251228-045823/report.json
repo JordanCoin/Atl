@@ -1,0 +1,30 @@
+{
+  "runId": "amazon-price-watch-airpods-20251228-045823",
+  "workflowId": "amazon-price-watch-airpods",
+  "workflowName": "AirPods Pro Price Monitor",
+  "timestamp": "2025-12-28T09:58:33Z",
+  "duration": 10,
+  "status": "failed",
+  "stepsExecuted": 6,
+  "stepsFailed": 1,
+  "failedSteps": "wait-for-page",
+  "extracted": {
+    "productTitle": "Apple AirPods Pro 2 Wireless Earbuds, Active Noise Cancellation, Hearing Aid Feature, Bluetooth Headphones, Transparency, Personalized Spatial Audio, High-Fidelity Sound, H2 Chip, USB-C Charging",
+    "currentPrice": 199,
+    "availability": "In Stock"
+  },
+  "comparison": {
+    "previousPrice": 199,
+    "priceChanged": false
+  },
+  "alert": {
+    "triggered": true,
+    "reason": "Workflow steps failed: wait-for-page",
+    "threshold": 200
+  },
+  "artifacts": {
+    "proof": "/Users/jordan/MakersStudio/Projects/Atl/watchdog/runs/amazon-price-watch-airpods-20251228-045823/proofPdf.pdf",
+    "report": "/Users/jordan/MakersStudio/Projects/Atl/watchdog/runs/amazon-price-watch-airpods-20251228-045823/report.json"
+  },
+  "replayCommand": "./watchdog/run-workflow.sh watchdog/workflows/amazon-price-watch.json"
+}

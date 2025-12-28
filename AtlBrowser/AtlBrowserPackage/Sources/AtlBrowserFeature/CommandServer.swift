@@ -292,6 +292,57 @@ final class CommandServer {
             case "deleteCookies":
                 await controller.deleteCookies()
 
+            // MARK: - Resilience Commands
+
+            case "waitForAny":
+                if let selectors = command.params?["selectors"] as? [String] {
+                    let timeout = command.params?["timeout"] as? TimeInterval ?? 10
+                    let matched = try await controller.waitForAnySelector(selectors, timeout: timeout)
+                    result = ["matched": matched, "selectors": selectors]
+                }
+
+            case "extract":
+                // Extract with selector chain and fallbacks
+                if let selectorConfig = command.params?["selector"] as? [String: Any] {
+                    let chain = selectorConfig["chain"] as? [String] ?? []
+                    let fallbackScript = selectorConfig["fallbackScript"] as? String
+                    let transform = selectorConfig["transform"] as? String
+
+                    let selectorChain = SelectorChain(chain: chain, fallbackScript: fallbackScript, transform: transform)
+                    let extractionResult = await controller.resolveSelector(selectorChain)
+
+                    result = [
+                        "value": extractionResult.value ?? NSNull(),
+                        "selectorUsed": extractionResult.selectorUsed,
+                        "wasFallback": extractionResult.wasFallback,
+                        "attempts": extractionResult.attempts,
+                        "success": extractionResult.success
+                    ]
+                }
+
+            case "getDOMSnapshot":
+                let snapshot = await controller.getDOMSnapshot()
+                result = ["html": snapshot ?? ""]
+
+            case "captureFailureArtifacts":
+                let failedSelector = command.params?["failedSelector"] as? String ?? "unknown"
+                let triedSelectors = command.params?["triedSelectors"] as? [String] ?? []
+                let errorMsg = command.params?["error"] as? String ?? "Unknown error"
+
+                let artifacts = await controller.captureFailureArtifacts(
+                    failedSelector: failedSelector,
+                    triedSelectors: triedSelectors,
+                    error: errorMsg
+                )
+
+                result = [
+                    "screenshot": artifacts.screenshot?.base64EncodedString() ?? "",
+                    "fullPagePdf": artifacts.fullPagePdf?.base64EncodedString() ?? "",
+                    "domSnapshot": artifacts.domSnapshot ?? "",
+                    "failedSelector": artifacts.failedSelector,
+                    "timestamp": ISO8601DateFormatter().string(from: artifacts.timestamp)
+                ]
+
             default:
                 return CommandResponse(id: command.id, success: false, result: nil, error: "Unknown command: \(command.method)")
             }

@@ -24,7 +24,7 @@ define cmd
 endef
 UDID := $(shell xcrun simctl list devices available | grep "$(SIMULATOR_NAME)" | grep -oE '[A-F0-9-]{36}' | head -1)
 
-.PHONY: start mac ios ping test test-nav test-cookies test-click test-cart test-all boot clean
+.PHONY: start mac ios ping test test-nav test-cookies test-click test-cart test-profiles test-all boot clean watchdog watchdog-run watchdog-runs watchdog-report watchdog-proof watchdog-resilient watchdog-artifacts
 
 # Start everything
 start: boot mac ios ping
@@ -332,3 +332,57 @@ test-all: test-nav test-cookies test-click test-cart test-profiles
 	@echo "============================================"
 	@echo "✅ ALL TESTS PASSED"
 	@echo "============================================"
+
+# ============================================
+# MOBILE SAFARI WATCHDOG - B2B Product Demo
+# ============================================
+
+# Run a watchdog workflow
+watchdog:
+	@./watchdog/run-workflow.sh watchdog/workflows/amazon-price-watch.json
+
+# Run watchdog with custom workflow
+watchdog-run:
+	@if [ -z "$(WORKFLOW)" ]; then \
+		echo "Usage: make watchdog-run WORKFLOW=path/to/workflow.json"; \
+	else \
+		./watchdog/run-workflow.sh $(WORKFLOW); \
+	fi
+
+# List all workflow runs
+watchdog-runs:
+	@echo "Recent Watchdog Runs:"
+	@ls -lt watchdog/runs 2>/dev/null | head -10 || echo "No runs yet"
+
+# View last run report
+watchdog-report:
+	@LAST_RUN=$$(ls -1t watchdog/runs 2>/dev/null | head -1); \
+	if [ -n "$$LAST_RUN" ]; then \
+		cat "watchdog/runs/$$LAST_RUN/report.json" | jq; \
+	else \
+		echo "No runs found"; \
+	fi
+
+# Open last proof PDF
+watchdog-proof:
+	@LAST_RUN=$$(ls -1t watchdog/runs 2>/dev/null | head -1); \
+	if [ -n "$$LAST_RUN" ]; then \
+		open "watchdog/runs/$$LAST_RUN/proofPdf.pdf"; \
+	else \
+		echo "No runs found"; \
+	fi
+
+# Run resilient watchdog (v2.0 with selector chains)
+watchdog-resilient:
+	@./watchdog/run-workflow-resilient.sh watchdog/workflows/amazon-price-watch-resilient.json
+
+# View failure artifacts from last run
+watchdog-artifacts:
+	@LAST_RUN=$$(ls -1t watchdog/runs 2>/dev/null | head -1); \
+	if [ -n "$$LAST_RUN" ] && [ -d "watchdog/runs/$$LAST_RUN/artifacts" ]; then \
+		echo "Artifacts for $$LAST_RUN:"; \
+		ls -la "watchdog/runs/$$LAST_RUN/artifacts/"; \
+		open "watchdog/runs/$$LAST_RUN/artifacts/"; \
+	else \
+		echo "No artifacts found"; \
+	fi
