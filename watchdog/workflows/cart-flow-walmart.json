@@ -1,0 +1,91 @@
+{
+  "id": "cart-flow-walmart",
+  "name": "Walmart Cart Flow",
+  "version": "1.0",
+  "description": "Add product to cart at Walmart",
+  "profile": "cart-test",
+  "extractionVersion": "v2",
+  "product": {
+    "name": "USB-C Cable",
+    "searchQuery": "usb c cable 6ft",
+    "description": "USB Type-C charging cable product listing",
+    "clipVerification": true
+  },
+  "store": {
+    "id": "walmart",
+    "name": "Walmart",
+    "baseUrl": "https://www.walmart.com",
+    "searchUrl": "https://www.walmart.com/search?q={query}",
+    "cartUrl": "https://www.walmart.com/cart"
+  },
+  "steps": [
+    {
+      "id": "search",
+      "name": "Search Results",
+      "action": "goto",
+      "pageType": "search_results",
+      "pageValidation": {
+        "urlContains": ["walmart.com/search"],
+        "titleNotContains": ["Access Denied", "Error", "Blocked"]
+      },
+      "selectors": {
+        "productLinks": "[data-item-id] a",
+        "resultCount": ".search-result-count"
+      },
+      "clipPrompt": "Walmart search results page with product listings"
+    },
+    {
+      "id": "product",
+      "name": "Product Page",
+      "action": "click",
+      "target": "[data-item-id] a[href*='/ip/']",
+      "fallbackTarget": "a[href*='/ip/']",
+      "pageType": "product",
+      "pageValidation": {
+        "urlContains": ["/ip/"],
+        "titleNotContains": ["Access Denied", "Error"]
+      },
+      "selectors": {
+        "title": "h1[itemprop='name']",
+        "price": "[itemprop='price'], .price-characteristic",
+        "addToCart": "[data-automation='add-to-cart']",
+        "availability": ".prod-ProductOffer"
+      },
+      "clipPrompt": "Walmart product page with price and Add to Cart button"
+    },
+    {
+      "id": "add-to-cart",
+      "name": "Add to Cart",
+      "action": "click",
+      "target": "[data-automation='add-to-cart']",
+      "fallbackTarget": "button[aria-label*='Add to cart']",
+      "pageType": "confirmation",
+      "selectors": {
+        "confirmation": ".atc-modal, .cart-confirmation"
+      }
+    },
+    {
+      "id": "cart",
+      "name": "Cart Page",
+      "action": "goto",
+      "url": "https://www.walmart.com/cart",
+      "pageType": "cart",
+      "pageValidation": {
+        "urlContains": ["cart"],
+        "titleContains": ["Cart"],
+        "titleNotContains": ["Access Denied", "Error"]
+      },
+      "selectors": {
+        "cartItems": ".cart-item",
+        "subtotal": ".cart-subtotal",
+        "checkout": "[data-automation='checkout-btn']"
+      },
+      "clipPrompt": "Walmart shopping cart page with items and checkout button"
+    }
+  ],
+  "trainingLabels": {
+    "search_results": {"hasProductGrid": true, "hasBuyButton": false},
+    "product": {"hasProductGrid": false, "hasBuyButton": true},
+    "cart": {"hasCheckoutButton": true, "hasBuyButton": false}
+  }
+}

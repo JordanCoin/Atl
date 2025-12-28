@@ -1,0 +1,108 @@
+{
+  "id": "cart-flow-amazon",
+  "name": "Amazon Cart Flow",
+  "version": "1.0",
+  "description": "Add product to cart and capture training data at each step",
+  "profile": "cart-test",
+  "extractionVersion": "v2",
+  "product": {
+    "name": "USB-C Cable",
+    "searchQuery": "usb c cable 6ft",
+    "description": "USB Type-C charging cable product listing",
+    "clipVerification": true
+  },
+  "store": {
+    "id": "amazon",
+    "name": "Amazon",
+    "baseUrl": "https://www.amazon.com",
+    "searchUrl": "https://www.amazon.com/s?k={query}",
+    "cartUrl": "https://www.amazon.com/cart"
+  },
+  "steps": [
+    {
+      "id": "search",
+      "name": "Search Results",
+      "action": "goto",
+      "pageType": "search_results",
+      "pageValidation": {
+        "urlContains": ["amazon.com/s"],
+        "titleContains": ["Amazon"],
+        "titleNotContains": ["Sign-In", "Error"]
+      },
+      "selectors": {
+        "productLinks": "a[href*='/dp/']",
+        "resultCount": ".s-result-count, .sg-col-inner span"
+      },
+      "clipPrompt": "Amazon search results page showing product listings"
+    },
+    {
+      "id": "product",
+      "name": "Product Page",
+      "action": "click",
+      "target": "a[href*='/dp/']",
+      "pageType": "product",
+      "pageValidation": {
+        "urlContains": ["/dp/"],
+        "titleNotContains": ["Sign-In", "Error", "Page Not Found"]
+      },
+      "selectors": {
+        "title": "#productTitle",
+        "price": ".a-price .a-offscreen",
+        "addToCart": "#add-to-cart-button",
+        "availability": "#availability"
+      },
+      "clipPrompt": "Amazon product detail page with price and Add to Cart button"
+    },
+    {
+      "id": "add-to-cart",
+      "name": "Add to Cart",
+      "action": "click",
+      "target": "#add-to-cart-button",
+      "fallbackTarget": "[name='submit.add-to-cart']",
+      "pageType": "confirmation",
+      "selectors": {
+        "confirmation": "#NATC_SMART_WAGON_CONF_MSG_SUCCESS, #sw-atc-confirmation"
+      }
+    },
+    {
+      "id": "cart",
+      "name": "Cart Page",
+      "action": "goto",
+      "url": "https://www.amazon.com/cart",
+      "pageType": "cart",
+      "pageValidation": {
+        "urlContains": ["cart"],
+        "titleContains": ["Cart", "Shopping"],
+        "titleNotContains": ["Sign-In", "Error"]
+      },
+      "selectors": {
+        "cartItems": ".sc-list-item",
+        "cartCount": "#nav-cart-count",
+        "subtotal": "#sc-subtotal-amount-activecart",
+        "proceedToCheckout": "#sc-buy-box-ptc-button"
+      },
+      "clipPrompt": "Amazon shopping cart page with items and checkout button"
+    }
+  ],
+  "trainingLabels": {
+    "search_results": {
+      "hasProductGrid": true,
+      "hasFilters": true,
+      "hasPrice": true,
+      "hasBuyButton": false
+    },
+    "product": {
+      "hasProductGrid": false,
+      "hasFilters": false,
+      "hasPrice": true,
+      "hasBuyButton": true
+    },
+    "cart": {
+      "hasProductGrid": false,
+      "hasFilters": false,
+      "hasPrice": true,
+      "hasBuyButton": true,
+      "hasCheckoutButton": true
+    }
+  }
+}

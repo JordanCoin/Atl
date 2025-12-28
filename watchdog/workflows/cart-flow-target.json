@@ -1,0 +1,91 @@
+{
+  "id": "cart-flow-target",
+  "name": "Target Cart Flow",
+  "version": "1.0",
+  "description": "Add product to cart at Target",
+  "profile": "cart-test",
+  "extractionVersion": "v2",
+  "product": {
+    "name": "USB-C Cable",
+    "searchQuery": "usb c cable",
+    "description": "USB Type-C charging cable product listing",
+    "clipVerification": true
+  },
+  "store": {
+    "id": "target",
+    "name": "Target",
+    "baseUrl": "https://www.target.com",
+    "searchUrl": "https://www.target.com/s?searchTerm={query}",
+    "cartUrl": "https://www.target.com/cart"
+  },
+  "steps": [
+    {
+      "id": "search",
+      "name": "Search Results",
+      "action": "goto",
+      "pageType": "search_results",
+      "pageValidation": {
+        "urlContains": ["target.com/s"],
+        "titleNotContains": ["Error", "Not Found"]
+      },
+      "selectors": {
+        "productLinks": "[data-test='product-card'] a",
+        "resultCount": "[data-test='resultsHeading']"
+      },
+      "clipPrompt": "Target search results page with red branding and product grid"
+    },
+    {
+      "id": "product",
+      "name": "Product Page",
+      "action": "click",
+      "target": "a[href*='/p/']",
+      "fallbackTarget": "[class*='ProductCard'] a",
+      "pageType": "product",
+      "pageValidation": {
+        "urlContains": ["/p/"],
+        "titleNotContains": ["Error", "Not Found"]
+      },
+      "selectors": {
+        "title": "[data-test='product-title']",
+        "price": "[data-test='product-price']",
+        "addToCart": "[data-test='shipItButton'], [data-test='addToCartButton']",
+        "availability": "[data-test='shippingBlock']"
+      },
+      "clipPrompt": "Target product page with red Add to Cart button"
+    },
+    {
+      "id": "add-to-cart",
+      "name": "Add to Cart",
+      "action": "click",
+      "target": "button[id*='addToCart']",
+      "fallbackTarget": "button[class*='AddToCart'], button[aria-label*='Add to cart']",
+      "pageType": "confirmation",
+      "selectors": {
+        "confirmation": "[data-test='addToCartModal'], .CartConfirmation"
+      }
+    },
+    {
+      "id": "cart",
+      "name": "Cart Page",
+      "action": "goto",
+      "url": "https://www.target.com/cart",
+      "pageType": "cart",
+      "pageValidation": {
+        "urlContains": ["cart"],
+        "titleContains": ["Cart"],
+        "titleNotContains": ["Error", "Sign in"]
+      },
+      "selectors": {
+        "cartItems": "[data-test='cartItem']",
+        "subtotal": "[data-test='cart-summary-subtotal']",
+        "checkout": "[data-test='checkout-button']"
+      },
+      "clipPrompt": "Target shopping cart page with red checkout button"
+    }
+  ],
+  "trainingLabels": {
+    "search_results": {"hasProductGrid": true, "hasBuyButton": false},
+    "product": {"hasProductGrid": false, "hasBuyButton": true},
+    "cart": {"hasCheckoutButton": true, "hasBuyButton": false}
+  }
+}

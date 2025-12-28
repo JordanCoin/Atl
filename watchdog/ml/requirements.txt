@@ -1,0 +1,7 @@
+torch
+transformers
+Pillow
+scikit-learn
+pdf2image
+numpy
+joblib
