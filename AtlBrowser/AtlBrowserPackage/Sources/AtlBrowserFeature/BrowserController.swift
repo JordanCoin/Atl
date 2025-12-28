@@ -415,6 +415,44 @@ class BrowserController: ObservableObject {
         }
     }
 
+    // MARK: - Vision Capture
+
+    /// Capture full page PDF with metadata for vision-based automation
+    /// Returns everything a vision model needs to understand and act on the page
+    func captureForVision() async throws -> VisionCapture {
+        let pdfData = try await takeFullPageScreenshot()
+
+        return VisionCapture(
+            pdf: pdfData,
+            url: currentURL?.absoluteString ?? "",
+            title: pageTitle,
+            timestamp: Date()
+        )
+    }
+
+    /// Save a vision capture to disk for training data
+    func saveVisionCapture(_ capture: VisionCapture, to directory: URL, name: String) throws -> URL {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        // Save PDF
+        let pdfPath = directory.appendingPathComponent("\(name).pdf")
+        try capture.pdf.write(to: pdfPath)
+
+        // Save metadata JSON
+        let metadata: [String: Any] = [
+            "url": capture.url,
+            "title": capture.title,
+            "timestamp": ISO8601DateFormatter().string(from: capture.timestamp),
+            "pdfFile": "\(name).pdf"
+        ]
+        let metadataPath = directory.appendingPathComponent("\(name).json")
+        let metadataData = try JSONSerialization.data(withJSONObject: metadata, options: .prettyPrinted)
+        try metadataData.write(to: metadataPath)
+
+        return pdfPath
+    }
+
     // MARK: - Cookies
 
     func getCookies() async -> [[String: Any]] {
@@ -474,6 +512,227 @@ class BrowserController: ObservableObject {
         let types: Set<String> = [WKWebsiteDataTypeCookies]
         let records = await dataStore.dataRecords(ofTypes: types)
         await dataStore.removeData(ofTypes: types, for: records)
+    }
+
+    // MARK: - Set-of-Mark (Visual Element Labeling)
+
+    /// Mark all interactive elements with numbered labels for vision-based automation
+    /// Returns array of marked elements with their labels, selectors, bounding boxes, and text
+    func markInteractiveElements() async throws -> [[String: Any]] {
+        let script = """
+        (function() {
+            // Remove any existing marks first
+            document.querySelectorAll('[data-som-mark]').forEach(el => el.remove());
+            document.querySelectorAll('[data-som-marked]').forEach(el => {
+                el.removeAttribute('data-som-marked');
+                el.style.outline = el.dataset.somOriginalOutline || '';
+                delete el.dataset.somOriginalOutline;
+            });
+
+            // Find all interactive elements
+            const interactiveSelectors = [
+                'a[href]',
+                'button',
+                'input:not([type="hidden"])',
+                'select',
+                'textarea',
+                '[role="button"]',
+                '[role="link"]',
+                '[role="checkbox"]',
+                '[role="radio"]',
+                '[role="tab"]',
+                '[role="menuitem"]',
+                '[onclick]',
+                '[tabindex]:not([tabindex="-1"])'
+            ];
+
+            const elements = [];
+            const seen = new Set();
+
+            interactiveSelectors.forEach(selector => {
+                document.querySelectorAll(selector).forEach(el => {
+                    if (seen.has(el)) return;
+                    seen.add(el);
+
+                    // Skip hidden elements
+                    const rect = el.getBoundingClientRect();
+                    if (rect.width === 0 || rect.height === 0) return;
+
+                    const style = window.getComputedStyle(el);
+                    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return;
+
+                    // Check if in viewport (with some margin)
+                    const inViewport = rect.top < window.innerHeight + 100 &&
+                                      rect.bottom > -100 &&
+                                      rect.left < window.innerWidth + 100 &&
+                                      rect.right > -100;
+                    if (!inViewport) return;
+
+                    elements.push(el);
+                });
+            });
+
+            // Sort by position (top-to-bottom, left-to-right)
+            elements.sort((a, b) => {
+                const aRect = a.getBoundingClientRect();
+                const bRect = b.getBoundingClientRect();
+                if (Math.abs(aRect.top - bRect.top) < 20) {
+                    return aRect.left - bRect.left;
+                }
+                return aRect.top - bRect.top;
+            });
+
+            // Create marks
+            const markedElements = [];
+            elements.forEach((el, index) => {
+                const rect = el.getBoundingClientRect();
+
+                // Create label element
+                const mark = document.createElement('div');
+                mark.setAttribute('data-som-mark', index.toString());
+                mark.style.cssText = `
+                    position: fixed;
+                    left: ${rect.left - 2}px;
+                    top: ${rect.top - 18}px;
+                    background: #FF6B6B;
+                    color: white;
+                    font-size: 11px;
+                    font-weight: bold;
+                    font-family: -apple-system, sans-serif;
+                    padding: 1px 4px;
+                    border-radius: 3px;
+                    z-index: 999999;
+                    pointer-events: none;
+                    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+                `;
+                mark.textContent = index.toString();
+                document.body.appendChild(mark);
+
+                // Add outline to element
+                el.dataset.somOriginalOutline = el.style.outline || '';
+                el.style.outline = '2px solid #FF6B6B';
+                el.setAttribute('data-som-marked', index.toString());
+
+                // Build unique selector for this element
+                let selector = '';
+                if (el.id) {
+                    selector = '#' + el.id;
+                } else {
+                    const tag = el.tagName.toLowerCase();
+                    const classes = Array.from(el.classList).slice(0, 2).join('.');
+                    selector = classes ? `${tag}.${classes}` : tag;
+
+                    // Add href or type for disambiguation
+                    if (el.href) {
+                        const href = el.getAttribute('href');
+                        if (href && href.length < 50) {
+                            selector += `[href="${href.replace(/"/g, '\\\\"')}"]`;
+                        }
+                    } else if (el.type) {
+                        selector += `[type="${el.type}"]`;
+                    } else if (el.name) {
+                        selector += `[name="${el.name}"]`;
+                    }
+                }
+
+                // Get meaningful text
+                let text = el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || '';
+                text = text.trim().substring(0, 100);
+
+                markedElements.push({
+                    label: index,
+                    selector: selector,
+                    tagName: el.tagName.toLowerCase(),
+                    type: el.type || null,
+                    text: text,
+                    href: el.href || null,
+                    boundingBox: {
+                        x: Math.round(rect.x),
+                        y: Math.round(rect.y),
+                        width: Math.round(rect.width),
+                        height: Math.round(rect.height)
+                    }
+                });
+            });
+
+            return markedElements;
+        })();
+        """
+
+        guard let result = try await evaluateJavaScript(script) as? [[String: Any]] else {
+            return []
+        }
+        return result
+    }
+
+    /// Remove all Set-of-Mark labels from the page
+    func unmarkElements() async throws {
+        let script = """
+        (function() {
+            // Remove mark labels
+            document.querySelectorAll('[data-som-mark]').forEach(el => el.remove());
+
+            // Remove outlines from marked elements
+            document.querySelectorAll('[data-som-marked]').forEach(el => {
+                el.style.outline = el.dataset.somOriginalOutline || '';
+                delete el.dataset.somOriginalOutline;
+                el.removeAttribute('data-som-marked');
+            });
+
+            return { success: true };
+        })();
+        """
+
+        _ = try await evaluateJavaScript(script)
+    }
+
+    /// Click an element by its Set-of-Mark label number
+    func clickByMark(_ label: Int) async throws {
+        let script = """
+        (function() {
+            const el = document.querySelector('[data-som-marked="\(label)"]');
+            if (!el) return { success: false, error: 'Mark not found: \(label)' };
+
+            // Scroll into view if needed
+            el.scrollIntoView({ behavior: 'instant', block: 'center' });
+
+            // Click the element
+            el.click();
+
+            return { success: true, tagName: el.tagName, text: el.innerText?.substring(0, 50) || '' };
+        })();
+        """
+
+        guard let result = try await evaluateJavaScript(script) as? [String: Any],
+              result["success"] as? Bool == true else {
+            throw BrowserError.elementNotFound("mark:\(label)")
+        }
+    }
+
+    /// Get element info by Set-of-Mark label without clicking
+    func getMarkInfo(_ label: Int) async throws -> [String: Any]? {
+        let script = """
+        (function() {
+            const el = document.querySelector('[data-som-marked="\(label)"]');
+            if (!el) return null;
+
+            const rect = el.getBoundingClientRect();
+            return {
+                label: \(label),
+                tagName: el.tagName.toLowerCase(),
+                text: (el.innerText || el.value || '').trim().substring(0, 100),
+                href: el.href || null,
+                boundingBox: {
+                    x: Math.round(rect.x),
+                    y: Math.round(rect.y),
+                    width: Math.round(rect.width),
+                    height: Math.round(rect.height)
+                }
+            };
+        })();
+        """
+
+        return try await evaluateJavaScript(script) as? [String: Any]
     }
 
     // MARK: - Selector Resilience
@@ -991,6 +1250,16 @@ class WebViewNavigationDelegate: NSObject, WKNavigationDelegate {
             controller?.navigationDidFail()
         }
     }
+}
+
+/// MARK: - Vision Capture Model
+
+/// Data structure for vision-based automation captures
+struct VisionCapture {
+    let pdf: Data           // Full page PDF data
+    let url: String         // Current page URL
+    let title: String       // Page title
+    let timestamp: Date     // Capture timestamp
 }
 
 // MARK: - Errors

@@ -279,6 +279,31 @@ final class CommandServer {
                 // For fullPage, data is PDF; otherwise PNG
                 result = ["data": imageData.base64EncodedString(), "format": fullPage ? "pdf" : "png"]
 
+            // Vision Capture - full page PDF with metadata for vision-based automation
+            case "captureForVision":
+                let capture = try await controller.captureForVision()
+
+                // Optionally save to disk if savePath is provided
+                if let savePath = command.params?["savePath"] as? String,
+                   let name = command.params?["name"] as? String {
+                    let directory = URL(fileURLWithPath: savePath)
+                    let savedPath = try controller.saveVisionCapture(capture, to: directory, name: name)
+                    result = [
+                        "pdf": capture.pdf.base64EncodedString(),
+                        "url": capture.url,
+                        "title": capture.title,
+                        "timestamp": ISO8601DateFormatter().string(from: capture.timestamp),
+                        "savedTo": savedPath.path
+                    ]
+                } else {
+                    result = [
+                        "pdf": capture.pdf.base64EncodedString(),
+                        "url": capture.url,
+                        "title": capture.title,
+                        "timestamp": ISO8601DateFormatter().string(from: capture.timestamp)
+                    ]
+                }
+
             // Cookies
             case "getCookies":
                 let cookies = await controller.getCookies()
@@ -323,6 +348,29 @@ final class CommandServer {
             case "getDOMSnapshot":
                 let snapshot = await controller.getDOMSnapshot()
                 result = ["html": snapshot ?? ""]
+
+            // MARK: - Set-of-Mark Commands
+
+            case "markElements":
+                let elements = try await controller.markInteractiveElements()
+                result = ["elements": elements, "count": elements.count]
+
+            case "unmarkElements":
+                try await controller.unmarkElements()
+                result = ["cleared": true]
+
+            case "clickMark":
+                if let label = command.params?["label"] as? Int {
+                    try await controller.clickByMark(label)
+                    result = ["clicked": label]
+                }
+
+            case "getMarkInfo":
+                if let label = command.params?["label"] as? Int {
+                    if let info = try await controller.getMarkInfo(label) {
+                        result = info
+                    }
+                }
 
             case "captureFailureArtifacts":
                 let failedSelector = command.params?["failedSelector"] as? String ?? "unknown"
