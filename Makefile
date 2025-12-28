@@ -24,7 +24,7 @@ define cmd
 endef
 UDID := $(shell xcrun simctl list devices available | grep "$(SIMULATOR_NAME)" | grep -oE '[A-F0-9-]{36}' | head -1)
 
-.PHONY: start mac ios ping test test-nav test-cookies test-click test-cart test-profiles test-all boot clean watchdog watchdog-run watchdog-runs watchdog-report watchdog-proof watchdog-resilient watchdog-artifacts
+.PHONY: start mac ios ping test test-nav test-cookies test-click test-cart test-profiles test-all boot clean watchdog watchdog-run watchdog-runs watchdog-report watchdog-proof watchdog-resilient watchdog-artifacts price-compare
 
 # Start everything
 start: boot mac ios ping
@@ -386,3 +386,7 @@ watchdog-artifacts:
 	else \
 		echo "No artifacts found"; \
 	fi
+
+# Run multi-store price comparison
+price-compare:
+	@./watchdog/run-price-compare.sh watchdog/workflows/price-compare-airpods.json

@@ -281,3 +281,152 @@ struct ResilienceConfig: Codable {
         degradedIsSuccess: true
     )
 }
+
+// MARK: - Extraction V2: Production-Safe Extraction
+
+/// Method used to extract the value
+enum ExtractionMethod: String, Codable {
+    case primarySelector      // First selector in chain matched
+    case fallbackSelector     // Later selector in chain matched
+    case regexFallback        // CSS failed, simple regex worked
+    case regexRanked          // Multiple regex matches, picked best
+    case failed               // Nothing worked
+}
+
+/// Confidence levels for different extraction methods
+enum ConfidenceLevel {
+    static let primarySelector: Double = 0.95
+    static let secondarySelector: Double = 0.85
+    static let tertiarySelector: Double = 0.75
+    static let regexWithGoodContext: Double = 0.60
+    static let regexRanked: Double = 0.50
+    static let regexFirst: Double = 0.35
+    static let failed: Double = 0.0
+}
+
+/// A candidate value found during extraction
+struct ExtractionCandidate: Codable {
+    let value: Double
+    let source: String           // selector name or "regex"
+    let score: Double            // 0.0 - 1.0
+    let context: String?         // surrounding text (50 chars each side)
+    let position: Int            // order found on page
+    let reasoning: [String]      // why this score
+}
+
+/// Result of page validation checks
+struct PageValidationResult: Codable {
+    let passed: Bool
+    let checks: [ValidationCheck]
+    let failedChecks: [String]
+
+    struct ValidationCheck: Codable {
+        let name: String
+        let passed: Bool
+        let expected: String?
+        let actual: String?
+    }
+
+    static let skipped = PageValidationResult(passed: true, checks: [], failedChecks: [])
+}
+
+/// Paths to captured artifacts on failure
+struct ArtifactPaths: Codable {
+    let screenshot: String?
+    let fullPagePdf: String?
+    let htmlSnapshot: String?
+    let textContent: String?
+}
+
+/// Production-safe extraction result with confidence scoring
+struct ExtractionResultV2: Codable {
+    let value: AnyCodable?
+    let confidence: Double          // 0.0 - 1.0
+    let method: ExtractionMethod
+    let selectorUsed: String?
+    let candidates: [ExtractionCandidate]?
+    let validationErrors: [String]
+    let pageValidation: PageValidationResult
+    let artifacts: ArtifactPaths?
+
+    /// Is this result reliable enough to use automatically?
+    var isReliable: Bool {
+        confidence >= 0.7 && validationErrors.isEmpty && pageValidation.passed
+    }
+
+    /// Is this result usable at all (even with low confidence)?
+    var isUsable: Bool {
+        value != nil && pageValidation.passed
+    }
+
+    /// Human-readable confidence level
+    var confidenceLevel: String {
+        switch confidence {
+        case 0.85...: return "high"
+        case 0.60..<0.85: return "medium"
+        case 0.40..<0.60: return "low"
+        default: return "very_low"
+        }
+    }
+}
+
+// MARK: - Page Validation Rules
+
+struct PageValidationRules: Codable {
+    let urlContains: [String]?
+    let urlNotContains: [String]?
+    let titleContains: [String]?
+    let titleNotContains: [String]?
+    let requiredElements: [String]?
+    let forbiddenElements: [String]?
+    let minContentLength: Int?
+}
+
+// MARK: - Candidate Ranking Configuration
+
+struct CandidateRankingConfig: Codable {
+    let preferRange: [Double]?         // e.g., [100, 300] for expected price range
+    let penalizeOutsideRange: Double?  // penalty for values outside range
+    let avoidContextPatterns: [String]? // e.g., ["shipping", "tax", "was"]
+    let avoidContextPenalty: Double?
+    let preferContextPatterns: [String]? // e.g., ["add to cart", "buy now"]
+    let preferContextBonus: Double?
+
+    static let `default` = CandidateRankingConfig(
+        preferRange: nil,
+        penalizeOutsideRange: 0.3,
+        avoidContextPatterns: ["shipping", "tax", "was", "list price", "save", "off"],
+        avoidContextPenalty: 0.2,
+        preferContextPatterns: ["price", "buy now", "add to cart", "your price"],
+        preferContextBonus: 0.15
+    )
+}
+
+// MARK: - Enhanced Selector Chain V2
+
+struct SelectorChainV2: Codable {
+    let chain: [String]
+    let fallbackPattern: String?
+    let fallbackRanking: CandidateRankingConfig?
+    let transform: String?
+
+    init(
+        chain: [String],
+        fallbackPattern: String? = nil,
+        fallbackRanking: CandidateRankingConfig? = nil,
+        transform: String? = nil
+    ) {
+        self.chain = chain
+        self.fallbackPattern = fallbackPattern
+        self.fallbackRanking = fallbackRanking
+        self.transform = transform
+    }
+
+    /// Convert from legacy SelectorChain
+    init(legacy: SelectorChain) {
+        self.chain = legacy.chain
+        self.fallbackPattern = legacy.fallbackScript != nil ? "\\$([0-9]+\\.?[0-9]*)" : nil
+        self.fallbackRanking = nil
+        self.transform = legacy.transform
+    }
+}

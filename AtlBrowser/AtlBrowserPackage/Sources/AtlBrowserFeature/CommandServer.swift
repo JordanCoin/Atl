@@ -343,6 +343,117 @@ final class CommandServer {
                     "timestamp": ISO8601DateFormatter().string(from: artifacts.timestamp)
                 ]
 
+            // MARK: - Extraction V2 (Production-Safe)
+
+            case "extractV2":
+                // Extract with V2 selector chain, page validation, and confidence scoring
+                if let selectorConfig = command.params?["selector"] as? [String: Any] {
+                    let chain = selectorConfig["chain"] as? [String] ?? []
+                    let fallbackPattern = selectorConfig["fallbackPattern"] as? String
+                    let transform = selectorConfig["transform"] as? String
+
+                    // Parse fallback ranking config
+                    var fallbackRanking: CandidateRankingConfig? = nil
+                    if let rankingConfig = selectorConfig["fallbackRanking"] as? [String: Any] {
+                        fallbackRanking = CandidateRankingConfig(
+                            preferRange: rankingConfig["preferRange"] as? [Double],
+                            penalizeOutsideRange: rankingConfig["penalizeOutsideRange"] as? Double,
+                            avoidContextPatterns: rankingConfig["avoidContextPatterns"] as? [String],
+                            avoidContextPenalty: rankingConfig["avoidContextPenalty"] as? Double,
+                            preferContextPatterns: rankingConfig["preferContextPatterns"] as? [String],
+                            preferContextBonus: rankingConfig["preferContextBonus"] as? Double
+                        )
+                    }
+
+                    let selectorChain = SelectorChainV2(
+                        chain: chain,
+                        fallbackPattern: fallbackPattern,
+                        fallbackRanking: fallbackRanking,
+                        transform: transform
+                    )
+
+                    // Parse page validation rules
+                    var pageValidation: PageValidationRules? = nil
+                    if let validationConfig = command.params?["pageValidation"] as? [String: Any] {
+                        pageValidation = PageValidationRules(
+                            urlContains: validationConfig["urlContains"] as? [String],
+                            urlNotContains: validationConfig["urlNotContains"] as? [String],
+                            titleContains: validationConfig["titleContains"] as? [String],
+                            titleNotContains: validationConfig["titleNotContains"] as? [String],
+                            requiredElements: validationConfig["requiredElements"] as? [String],
+                            forbiddenElements: validationConfig["forbiddenElements"] as? [String],
+                            minContentLength: validationConfig["minContentLength"] as? Int
+                        )
+                    }
+
+                    // Parse value validation rules
+                    var valueValidation: ValidationRule? = nil
+                    if let valConfig = command.params?["validation"] as? [String: Any] {
+                        let typeStr = valConfig["type"] as? String
+                        let valType: ValidationRule.ValidationType? = typeStr.flatMap { ValidationRule.ValidationType(rawValue: $0) }
+                        valueValidation = ValidationRule(
+                            type: valType,
+                            required: valConfig["required"] as? Bool,
+                            minLength: valConfig["minLength"] as? Int,
+                            maxLength: valConfig["maxLength"] as? Int,
+                            range: valConfig["range"] as? [Double],
+                            pattern: valConfig["pattern"] as? String,
+                            notContains: valConfig["notContains"] as? [String],
+                            contains: valConfig["contains"] as? [String]
+                        )
+                    }
+
+                    let extractionResult = await controller.resolveSelectorV2(
+                        chain: selectorChain,
+                        pageValidation: pageValidation,
+                        valueValidation: valueValidation
+                    )
+
+                    // Build candidates array for result
+                    var candidatesArray: [[String: Any]] = []
+                    if let candidates = extractionResult.candidates {
+                        for c in candidates {
+                            candidatesArray.append([
+                                "value": c.value,
+                                "source": c.source,
+                                "score": c.score,
+                                "context": c.context ?? "",
+                                "position": c.position,
+                                "reasoning": c.reasoning
+                            ])
+                        }
+                    }
+
+                    // Build page validation result
+                    var pageValidationResult: [String: Any] = [
+                        "passed": extractionResult.pageValidation.passed,
+                        "failedChecks": extractionResult.pageValidation.failedChecks
+                    ]
+                    var checksArray: [[String: Any]] = []
+                    for check in extractionResult.pageValidation.checks {
+                        checksArray.append([
+                            "name": check.name,
+                            "passed": check.passed,
+                            "expected": check.expected ?? "",
+                            "actual": check.actual ?? ""
+                        ])
+                    }
+                    pageValidationResult["checks"] = checksArray
+
+                    result = [
+                        "value": extractionResult.value?.value ?? NSNull(),
+                        "confidence": extractionResult.confidence,
+                        "confidenceLevel": extractionResult.confidenceLevel,
+                        "method": extractionResult.method.rawValue,
+                        "selectorUsed": extractionResult.selectorUsed ?? "",
+                        "candidates": candidatesArray,
+                        "validationErrors": extractionResult.validationErrors,
+                        "pageValidation": pageValidationResult,
+                        "isReliable": extractionResult.isReliable,
+                        "isUsable": extractionResult.isUsable
+                    ]
+                }
+
             default:
                 return CommandResponse(id: command.id, success: false, result: nil, error: "Unknown command: \(command.method)")
             }

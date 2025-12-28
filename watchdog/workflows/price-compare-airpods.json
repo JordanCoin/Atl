@@ -1,0 +1,160 @@
+{
+  "id": "price-compare-airpods",
+  "name": "AirPods Pro Price Comparison",
+  "version": "2.0",
+  "description": "Compare AirPods Pro prices across multiple retailers with V2 extraction",
+  "schedule": "0 8 * * *",
+  "profile": "price-compare",
+  "extractionVersion": "v2",
+  "resilience": {
+    "retryCount": 2,
+    "retryStrategies": ["scroll", "wait"],
+    "captureOnFailure": true,
+    "degradedIsSuccess": true
+  },
+  "stores": [
+    {
+      "id": "amazon",
+      "name": "Amazon",
+      "url": "https://www.amazon.com/dp/B0D1XD1ZV3",
+      "pageValidation": {
+        "urlContains": ["amazon.com"],
+        "urlNotContains": ["signin", "captcha", "ap/signin"],
+        "titleContains": ["AirPods"],
+        "titleNotContains": ["Robot Check", "Page Not Found", "Sign-In"],
+        "forbiddenElements": ["#captcha", "#auth-error-message-box"]
+      },
+      "selectors": {
+        "title": {
+          "chain": ["#productTitle", "#title", "h1"]
+        },
+        "price": {
+          "chain": [".a-price .a-offscreen", "#priceblock_ourprice", "#corePrice_feature_div .a-offscreen"],
+          "fallbackPattern": "\\$([0-9]{1,4}\\.?[0-9]{0,2})",
+          "fallbackRanking": {
+            "preferRange": [150, 300],
+            "avoidContextPatterns": ["shipping", "tax", "was", "list price", "save", "off", "shipping & handling"],
+            "preferContextPatterns": ["add to cart", "buy now", "price", "your price"]
+          }
+        },
+        "availability": {
+          "chain": ["#availability span", "#availability"]
+        }
+      },
+      "validation": {
+        "price": {
+          "type": "number",
+          "range": [100, 400]
+        }
+      }
+    },
+    {
+      "id": "bestbuy",
+      "name": "Best Buy",
+      "url": "https://www.bestbuy.com/site/apple-airpods-pro-2nd-generation-with-magsafe-case-usb-c-white/6447382.p",
+      "pageValidation": {
+        "urlContains": ["bestbuy.com"],
+        "urlNotContains": ["signin", "login"],
+        "titleContains": ["AirPods"],
+        "titleNotContains": ["Error", "Not Found"]
+      },
+      "selectors": {
+        "title": {
+          "chain": [".sku-title h1", ".heading-5", "h1"]
+        },
+        "price": {
+          "chain": [".priceView-customer-price span", ".priceView-hero-price span", "[data-testid='customer-price'] span"],
+          "fallbackPattern": "\\$([0-9]{1,4}\\.?[0-9]{0,2})",
+          "fallbackRanking": {
+            "preferRange": [150, 300],
+            "avoidContextPatterns": ["shipping", "was", "save", "reg"],
+            "preferContextPatterns": ["add to cart", "price", "your price"]
+          }
+        },
+        "availability": {
+          "chain": [".fulfillment-add-to-cart-button button", ".add-to-cart-button"]
+        }
+      },
+      "validation": {
+        "price": {
+          "type": "number",
+          "range": [100, 400]
+        }
+      }
+    },
+    {
+      "id": "walmart",
+      "name": "Walmart",
+      "url": "https://www.walmart.com/ip/AirPods-Pro-2nd-generation-with-MagSafe-Case-USB-C/5689919121",
+      "pageValidation": {
+        "urlContains": ["walmart.com"],
+        "urlNotContains": ["signin", "login", "blocked"],
+        "titleContains": ["AirPods"],
+        "titleNotContains": ["Access Denied", "Error", "Blocked"]
+      },
+      "selectors": {
+        "title": {
+          "chain": ["h1[itemprop='name']", ".prod-ProductTitle", "h1"]
+        },
+        "price": {
+          "chain": ["[itemprop='price']", ".price-characteristic", "[data-automation='product-price'] span"],
+          "fallbackPattern": "\\$([0-9]{1,4}\\.?[0-9]{0,2})",
+          "fallbackRanking": {
+            "preferRange": [150, 300],
+            "avoidContextPatterns": ["shipping", "delivery", "was", "save"],
+            "preferContextPatterns": ["add to cart", "price", "current price"]
+          }
+        },
+        "availability": {
+          "chain": [".prod-ProductOffer button", "[data-automation='add-to-cart']"]
+        }
+      },
+      "validation": {
+        "price": {
+          "type": "number",
+          "range": [100, 400]
+        }
+      }
+    },
+    {
+      "id": "target",
+      "name": "Target",
+      "url": "https://www.target.com/p/apple-airpods-pro-2nd-generation-with-usb-c-magsafe-charging-case/-/A-89957258",
+      "pageValidation": {
+        "urlContains": ["target.com"],
+        "urlNotContains": ["signin", "login", "account"],
+        "titleContains": ["AirPods"],
+        "titleNotContains": ["Error", "Not Found", "Unavailable"]
+      },
+      "selectors": {
+        "title": {
+          "chain": ["h1[data-test='product-title']", ".Heading__StyledHeading", "h1"]
+        },
+        "price": {
+          "chain": ["[data-test='product-price']", ".styles__CurrentPriceFontSize", ".h-text-lg"],
+          "fallbackPattern": "\\$([0-9]{1,4}\\.?[0-9]{0,2})",
+          "fallbackRanking": {
+            "preferRange": [150, 300],
+            "avoidContextPatterns": ["shipping", "was", "save", "reg", "clearance"],
+            "preferContextPatterns": ["add to cart", "price", "sale"]
+          }
+        },
+        "availability": {
+          "chain": ["[data-test='shippingBlock']", "[data-test='storeBlock']"]
+        }
+      },
+      "validation": {
+        "price": {
+          "type": "number",
+          "range": [100, 400]
+        }
+      }
+    }
+  ],
+  "comparison": {
+    "alertOnPriceDiff": 10,
+    "alertOnLowestPrice": true,
+    "trackHistory": true,
+    "minConfidence": 0.6
+  }
+}

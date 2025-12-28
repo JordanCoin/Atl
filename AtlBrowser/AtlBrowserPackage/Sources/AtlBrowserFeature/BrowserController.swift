@@ -666,6 +666,289 @@ class BrowserController: ObservableObject {
         // For now, return empty array
         return []
     }
+
+    // MARK: - Extraction V2: Production-Safe
+
+    /// Check if an element exists on the page
+    func elementExists(_ selector: String) async -> Bool {
+        let script = "document.querySelector('\(selector.escapedForJS)') !== null"
+        return (try? await evaluateJavaScript(script) as? Bool) ?? false
+    }
+
+    /// Validate the current page against rules
+    func validatePage(_ rules: PageValidationRules) async -> PageValidationResult {
+        var checks: [PageValidationResult.ValidationCheck] = []
+        var failedChecks: [String] = []
+
+        let urlString = currentURL?.absoluteString.lowercased() ?? ""
+        let title = pageTitle.lowercased()
+
+        // URL contains check
+        if let urlContains = rules.urlContains {
+            let passed = urlContains.allSatisfy { urlString.contains($0.lowercased()) }
+            checks.append(.init(name: "urlContains", passed: passed,
+                expected: urlContains.joined(separator: ", "), actual: urlString))
+            if !passed { failedChecks.append("URL missing required pattern") }
+        }
+
+        // URL not contains (detect redirects/errors)
+        if let urlNotContains = rules.urlNotContains {
+            let passed = !urlNotContains.contains { urlString.contains($0.lowercased()) }
+            checks.append(.init(name: "urlNotContains", passed: passed,
+                expected: "none of: \(urlNotContains.joined(separator: ", "))", actual: urlString))
+            if !passed { failedChecks.append("URL contains forbidden pattern (redirect/error?)") }
+        }
+
+        // Title contains (product verification)
+        if let titleContains = rules.titleContains {
+            let passed = titleContains.contains { title.contains($0.lowercased()) }
+            checks.append(.init(name: "titleContains", passed: passed,
+                expected: "any of: \(titleContains.joined(separator: ", "))", actual: pageTitle))
+            if !passed { failedChecks.append("Page title missing expected keywords") }
+        }
+
+        // Title not contains (error pages)
+        if let titleNotContains = rules.titleNotContains {
+            let passed = !titleNotContains.contains { title.contains($0.lowercased()) }
+            checks.append(.init(name: "titleNotContains", passed: passed,
+                expected: "none of: \(titleNotContains.joined(separator: ", "))", actual: pageTitle))
+            if !passed { failedChecks.append("Page appears to be error/captcha page") }
+        }
+
+        // Required elements
+        if let required = rules.requiredElements {
+            for selector in required {
+                let exists = await elementExists(selector)
+                checks.append(.init(name: "required:\(selector)", passed: exists,
+                    expected: "exists", actual: exists ? "found" : "missing"))
+                if !exists { failedChecks.append("Required element missing: \(selector)") }
+            }
+        }
+
+        // Forbidden elements (captcha, blocks)
+        if let forbidden = rules.forbiddenElements {
+            for selector in forbidden {
+                let exists = await elementExists(selector)
+                let passed = !exists
+                checks.append(.init(name: "forbidden:\(selector)", passed: passed,
+                    expected: "not present", actual: exists ? "FOUND" : "not found"))
+                if !passed { failedChecks.append("Forbidden element detected: \(selector)") }
+            }
+        }
+
+        return PageValidationResult(passed: failedChecks.isEmpty, checks: checks, failedChecks: failedChecks)
+    }
+
+    /// Extract and rank all price candidates from the page
+    func extractPriceCandidates(ranking: CandidateRankingConfig?) async -> [ExtractionCandidate] {
+        let config = ranking ?? .default
+
+        // JavaScript to find all prices with context using matchAll
+        let script = """
+        (function() {
+            const prices = [];
+            const text = document.body.innerText;
+            const matches = [...text.matchAll(/\\$([0-9]{1,4}\\.?[0-9]{0,2})/g)];
+
+            matches.slice(0, 20).forEach((match, index) => {
+                const start = Math.max(0, match.index - 50);
+                const end = Math.min(text.length, match.index + match[0].length + 50);
+                const context = text.substring(start, end).toLowerCase();
+
+                prices.push({
+                    value: parseFloat(match[1]),
+                    position: index,
+                    context: context
+                });
+            });
+            return prices;
+        })();
+        """
+
+        guard let results = try? await evaluateJavaScript(script) as? [[String: Any]] else {
+            return []
+        }
+
+        var candidates: [ExtractionCandidate] = []
+
+        for data in results {
+            guard let value = data["value"] as? Double,
+                  let position = data["position"] as? Int,
+                  let context = data["context"] as? String else { continue }
+
+            var score: Double = 0.5
+            var reasoning: [String] = []
+
+            // Range preference
+            if let range = config.preferRange, range.count >= 2 {
+                if value >= range[0] && value <= range[1] {
+                    score += 0.2
+                    reasoning.append("+0.2: in expected range")
+                } else {
+                    score -= config.penalizeOutsideRange ?? 0.3
+                    reasoning.append("-\(config.penalizeOutsideRange ?? 0.3): outside range")
+                }
+            }
+
+            // Avoid bad context (shipping, tax, was)
+            if let avoid = config.avoidContextPatterns {
+                for pattern in avoid {
+                    if context.contains(pattern.lowercased()) {
+                        score -= config.avoidContextPenalty ?? 0.2
+                        reasoning.append("-\(config.avoidContextPenalty ?? 0.2): near '\(pattern)'")
+                        break
+                    }
+                }
+            }
+
+            // Prefer good context (add to cart, price)
+            if let prefer = config.preferContextPatterns {
+                for pattern in prefer {
+                    if context.contains(pattern.lowercased()) {
+                        score += config.preferContextBonus ?? 0.15
+                        reasoning.append("+\(config.preferContextBonus ?? 0.15): near '\(pattern)'")
+                        break
+                    }
+                }
+            }
+
+            // Position bonus
+            if position == 0 {
+                score += 0.1
+                reasoning.append("+0.1: first price on page")
+            }
+
+            candidates.append(ExtractionCandidate(
+                value: value,
+                source: "regex",
+                score: max(0, min(1, score)),
+                context: context,
+                position: position,
+                reasoning: reasoning
+            ))
+        }
+
+        return candidates.sorted { $0.score > $1.score }
+    }
+
+    /// Production-safe extraction with page validation, selector chain, and candidate ranking
+    func resolveSelectorV2(
+        chain: SelectorChainV2,
+        pageValidation: PageValidationRules?,
+        valueValidation: ValidationRule?
+    ) async -> ExtractionResultV2 {
+        var validationErrors: [String] = []
+
+        // LAYER 1: Page Validation
+        let pageResult: PageValidationResult
+        if let rules = pageValidation {
+            pageResult = await validatePage(rules)
+            if !pageResult.passed {
+                return ExtractionResultV2(
+                    value: nil,
+                    confidence: 0,
+                    method: .failed,
+                    selectorUsed: nil,
+                    candidates: nil,
+                    validationErrors: pageResult.failedChecks,
+                    pageValidation: pageResult,
+                    artifacts: nil
+                )
+            }
+        } else {
+            pageResult = .skipped
+        }
+
+        // LAYER 2: Selector Chain
+        for (index, selector) in chain.chain.enumerated() {
+            let script = """
+            (function() {
+                const el = document.querySelector('\(selector.escapedForJS)');
+                if (!el) return null;
+                return el.textContent?.trim() || el.innerText?.trim() || null;
+            })();
+            """
+
+            if let rawValue = try? await evaluateJavaScript(script),
+               !(rawValue is NSNull),
+               let stringValue = rawValue as? String,
+               !stringValue.isEmpty {
+
+                let transformed = applyTransform(stringValue, chain.transform)
+
+                // Calculate confidence
+                let confidence: Double
+                switch index {
+                case 0: confidence = ConfidenceLevel.primarySelector
+                case 1: confidence = ConfidenceLevel.secondarySelector
+                default: confidence = ConfidenceLevel.tertiarySelector
+                }
+
+                // Value validation
+                if let validation = valueValidation {
+                    let result = validation.validate(transformed)
+                    if !result.isValid, let msg = result.message {
+                        validationErrors.append(msg)
+                    }
+                }
+
+                return ExtractionResultV2(
+                    value: AnyCodable(transformed),
+                    confidence: validationErrors.isEmpty ? confidence : confidence * 0.5,
+                    method: index == 0 ? .primarySelector : .fallbackSelector,
+                    selectorUsed: selector,
+                    candidates: nil,
+                    validationErrors: validationErrors,
+                    pageValidation: pageResult,
+                    artifacts: nil
+                )
+            }
+        }
+
+        // LAYER 3: Regex Fallback with Candidate Ranking
+        if chain.fallbackPattern != nil {
+            let candidates = await extractPriceCandidates(ranking: chain.fallbackRanking)
+
+            if let best = candidates.first {
+                let transformed = applyTransform(best.value, chain.transform)
+
+                let confidence = candidates.count > 1
+                    ? ConfidenceLevel.regexRanked * best.score
+                    : ConfidenceLevel.regexFirst * best.score
+
+                // Value validation
+                if let validation = valueValidation {
+                    let result = validation.validate(transformed)
+                    if !result.isValid, let msg = result.message {
+                        validationErrors.append(msg)
+                    }
+                }
+
+                return ExtractionResultV2(
+                    value: AnyCodable(transformed),
+                    confidence: validationErrors.isEmpty ? confidence : confidence * 0.5,
+                    method: candidates.count > 1 ? .regexRanked : .regexFallback,
+                    selectorUsed: "regex",
+                    candidates: Array(candidates.prefix(5)),
+                    validationErrors: validationErrors,
+                    pageValidation: pageResult,
+                    artifacts: nil
+                )
+            }
+        }
+
+        // FAILED
+        return ExtractionResultV2(
+            value: nil,
+            confidence: 0,
+            method: .failed,
+            selectorUsed: nil,
+            candidates: nil,
+            validationErrors: ["No selector matched and fallback failed"],
+            pageValidation: pageResult,
+            artifacts: nil
+        )
+    }
 }
 
 // MARK: - Navigation Delegate
