@@ -105,10 +105,58 @@ vision_title() {
 }
 
 # ============================================================================
-# Vision Capture - Full Page PDFs for Claude to Read
+# Vision Capture - Multiple Modes for Different Use Cases
 # ============================================================================
+#
+# Capture Modes (ordered by size/cost):
+#   light  - Text + interactives only (~9KB, 99% smaller)
+#   vision - JPEG viewport Q80 (~360KB, 67% smaller)
+#   full   - JPEG full page Q80 (~700KB, 36% smaller)
+#   debug  - PDF full page (~1.1MB, current default)
+#
+# Use 'light' for routine navigation, 'vision' when you need to see layout
 
-# Capture full page PDF for Claude to analyze
+# Light capture - text + interactives only (~9KB)
+# Use when Claude just needs to know what's clickable, not see it
+# Usage: vision_capture_light
+vision_capture_light() {
+    curl -s -X POST "$COMMAND_SERVER/command" \
+        -H "Content-Type: application/json" \
+        -d '{"id":"light","method":"captureLight","params":{}}' | jq -c '.result'
+}
+
+# JPEG capture - smaller than PDF, still visual
+# Usage: vision_capture_jpeg [quality] [fullPage]
+# quality: 40-90 (default 80)
+# fullPage: true/false (default false = viewport only)
+vision_capture_jpeg() {
+    local quality="${1:-80}"
+    local full_page="${2:-false}"
+
+    local response=$(curl -s -X POST "$COMMAND_SERVER/command" \
+        -H "Content-Type: application/json" \
+        -d "{\"id\":\"jpeg\",\"method\":\"captureJPEG\",\"params\":{\"quality\":$quality,\"fullPage\":$full_page}}")
+
+    # Return metadata (without the base64 image data for console output)
+    echo "$response" | jq -c '{url:.result.url,title:.result.title,size:.result.size,width:.result.width,height:.result.height}'
+}
+
+# Save JPEG capture to file
+# Usage: vision_save_jpeg "filename.jpg" [quality] [fullPage]
+vision_save_jpeg() {
+    local filename="$1"
+    local quality="${2:-80}"
+    local full_page="${3:-false}"
+
+    curl -s -X POST "$COMMAND_SERVER/command" \
+        -H "Content-Type: application/json" \
+        -d "{\"id\":\"jpeg\",\"method\":\"captureJPEG\",\"params\":{\"quality\":$quality,\"fullPage\":$full_page}}" \
+        | jq -r '.result.jpeg' | base64 -d > "$filename"
+
+    ls -lah "$filename" | awk '{print "{\"file\":\"'$filename'\",\"size\":\""$5"\"}"}'
+}
+
+# Capture full page PDF for Claude to analyze (original method - for debugging)
 # Usage: vision_capture "step-name"
 # Returns: Path to saved PDF
 vision_capture() {
@@ -126,6 +174,31 @@ vision_capture() {
 
     # Output for Claude to see
     echo "{\"step\":$VISION_STEP,\"name\":\"$step_name\",\"pdf\":\"$pdf_path\",\"url\":\"$url\",\"title\":\"$title\"}"
+}
+
+# Smart capture - chooses mode based on context
+# Usage: vision_capture_smart [mode]
+# mode: light, vision, full, debug (default: light)
+vision_capture_smart() {
+    local mode="${1:-light}"
+
+    case "$mode" in
+        light)
+            vision_capture_light
+            ;;
+        vision)
+            vision_capture_jpeg 80 false
+            ;;
+        full)
+            vision_capture_jpeg 80 true
+            ;;
+        debug)
+            vision_capture "capture"
+            ;;
+        *)
+            echo "{\"error\":\"unknown mode: $mode\",\"valid\":[\"light\",\"vision\",\"full\",\"debug\"]}"
+            ;;
+    esac
 }
 
 # ============================================================================
@@ -338,6 +411,19 @@ WORKFLOW:
   vision_init "name"              Initialize workflow run
   vision_capture "step-name"      Capture PDF for Claude to read
   vision_complete "status" "msg"  Finalize workflow
+
+CAPTURE MODES (ordered by size):
+  vision_capture_light            Text + interactives (~9KB, 99% smaller)
+  vision_capture_jpeg [q] [full]  JPEG viewport/full (~360KB/700KB)
+  vision_save_jpeg "file.jpg"     Save JPEG to file
+  vision_capture "step"           PDF full page (~1.1MB, for debug)
+  vision_capture_smart [mode]     Choose: light|vision|full|debug
+
+  Size comparison:
+    light  ~9KB    Use for routine navigation
+    vision ~360KB  When layout matters (viewport JPEG)
+    full   ~700KB  Full scrollable page (JPEG)
+    debug  ~1.1MB  PDF for archiving/debugging
 
 PAGE READY (replaces fixed sleep):
   vision_wait_ready [timeout] [stabilityMs] [selector]

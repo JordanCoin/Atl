@@ -453,6 +453,159 @@ class BrowserController: ObservableObject {
         return pdfPath
     }
 
+    // MARK: - Optimized Capture Modes
+
+    /// Light capture - text + interactives only (~9KB vs 1.1MB PDF)
+    /// Use when Claude just needs to know what's on the page, not see it
+    struct LightCapture {
+        let url: String
+        let title: String
+        let text: String
+        let interactives: [[String: Any?]]
+        let timestamp: Date
+
+        var asDict: [String: Any] {
+            [
+                "url": url,
+                "title": title,
+                "text": text,
+                "interactives": interactives,
+                "timestamp": ISO8601DateFormatter().string(from: timestamp)
+            ]
+        }
+    }
+
+    /// Capture in light mode - text and interactives only, no image
+    /// ~99% smaller than PDF, sufficient for most navigation tasks
+    func captureLight() async throws -> LightCapture {
+        // Get page text
+        let textScript = "document.body.innerText"
+        let text = try await evaluateJavaScript(textScript) as? String ?? ""
+
+        // Get interactive elements
+        let interactivesScript = """
+        (function(){
+            const els = [];
+            document.querySelectorAll('button,a[href],input,select,textarea,[role=button],[role=link],[role=menuitem]').forEach((e, i) => {
+                if (i > 100) return;
+                const rect = e.getBoundingClientRect();
+                if (rect.width === 0 || rect.height === 0) return;
+                const t = e.textContent?.trim() || e.value || e.title || e.getAttribute('aria-label') || e.placeholder || '';
+                if (t.length === 0 || t.length > 200) return;
+                els.push({
+                    tag: e.tagName,
+                    type: e.type || null,
+                    text: t.substring(0, 100),
+                    href: e.href || null,
+                    id: e.id || null,
+                    name: e.name || null,
+                    ariaLabel: e.getAttribute('aria-label') || null
+                });
+            });
+            return els;
+        })();
+        """
+        let interactives = try await evaluateJavaScript(interactivesScript) as? [[String: Any?]] ?? []
+
+        return LightCapture(
+            url: currentURL?.absoluteString ?? "",
+            title: pageTitle,
+            text: text,
+            interactives: interactives,
+            timestamp: Date()
+        )
+    }
+
+    /// JPEG capture result
+    struct JPEGCapture: Sendable {
+        let jpeg: Data
+        let url: String
+        let title: String
+        let width: Int
+        let height: Int
+        let quality: Int
+        let fullPage: Bool
+        let timestamp: Date
+    }
+
+    /// Capture as JPEG - smaller than PDF, still visual
+    /// - Parameters:
+    ///   - quality: JPEG quality 0-100 (default 80)
+    ///   - fullPage: Capture full scrollable page or just viewport
+    /// - Returns: JPEGCapture with image data and metadata
+    func captureJPEG(quality: Int = 80, fullPage: Bool = false) async throws -> JPEGCapture {
+        let imageData: Data
+        let width: Int
+        let height: Int
+
+        if fullPage {
+            // Full page - render PDF then convert to JPEG
+            let pdfData = try await takeFullPageScreenshot()
+
+            // Get page dimensions for metadata
+            let dimensionScript = """
+            (function(){
+                return {
+                    width: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
+                    height: Math.max(document.documentElement.scrollHeight, document.body.scrollHeight)
+                };
+            })();
+            """
+            let dims = try await evaluateJavaScript(dimensionScript) as? [String: Int] ?? [:]
+            width = dims["width"] ?? 0
+            height = dims["height"] ?? 0
+
+            // Convert PDF to JPEG using Core Graphics
+            guard let provider = CGDataProvider(data: pdfData as CFData),
+                  let pdfDoc = CGPDFDocument(provider),
+                  let page = pdfDoc.page(at: 1) else {
+                throw BrowserError.screenshotFailed
+            }
+
+            let pageRect = page.getBoxRect(.mediaBox)
+            let scale: CGFloat = 2.0 // Retina
+            let scaledSize = CGSize(width: pageRect.width * scale, height: pageRect.height * scale)
+
+            let renderer = UIGraphicsImageRenderer(size: scaledSize)
+            let image = renderer.image { context in
+                UIColor.white.setFill()
+                context.fill(CGRect(origin: .zero, size: scaledSize))
+
+                context.cgContext.translateBy(x: 0, y: scaledSize.height)
+                context.cgContext.scaleBy(x: scale, y: -scale)
+                context.cgContext.drawPDFPage(page)
+            }
+
+            guard let jpegData = image.jpegData(compressionQuality: CGFloat(quality) / 100.0) else {
+                throw BrowserError.screenshotFailed
+            }
+            imageData = jpegData
+        } else {
+            // Viewport only - take snapshot and convert to JPEG
+            let pngData = try await takeScreenshot()
+
+            guard let uiImage = UIImage(data: pngData),
+                  let jpegData = uiImage.jpegData(compressionQuality: CGFloat(quality) / 100.0) else {
+                throw BrowserError.screenshotFailed
+            }
+
+            width = Int(uiImage.size.width)
+            height = Int(uiImage.size.height)
+            imageData = jpegData
+        }
+
+        return JPEGCapture(
+            jpeg: imageData,
+            url: currentURL?.absoluteString ?? "",
+            title: pageTitle,
+            width: width,
+            height: height,
+            quality: quality,
+            fullPage: fullPage,
+            timestamp: Date()
+        )
+    }
+
     // MARK: - Cookies
 
     func getCookies() async -> [[String: Any]] {
@@ -1414,6 +1567,7 @@ enum BrowserError: LocalizedError {
     case timeout(String)
     case javascriptError(String)
     case selectorChainExhausted([String])
+    case screenshotFailed
 
     var errorDescription: String? {
         switch self {
@@ -1429,6 +1583,8 @@ enum BrowserError: LocalizedError {
             return "JavaScript error: \(message)"
         case .selectorChainExhausted(let selectors):
             return "No selector matched: \(selectors.joined(separator: ", "))"
+        case .screenshotFailed:
+            return "Failed to capture screenshot"
         }
     }
 }

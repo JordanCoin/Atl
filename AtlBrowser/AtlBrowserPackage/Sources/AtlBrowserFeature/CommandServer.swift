@@ -322,6 +322,29 @@ final class CommandServer {
                     ]
                 }
 
+            // Light Capture - text + interactives only (~9KB vs 1.1MB PDF)
+            case "captureLight":
+                let capture = try await controller.captureLight()
+                result = capture.asDict
+
+            // JPEG Capture - smaller than PDF, still visual
+            case "captureJPEG":
+                let quality = command.params?["quality"] as? Int ?? 80
+                let fullPage = command.params?["fullPage"] as? Bool ?? false
+                let capture = try await controller.captureJPEG(quality: quality, fullPage: fullPage)
+
+                result = [
+                    "jpeg": capture.jpeg.base64EncodedString(),
+                    "url": capture.url,
+                    "title": capture.title,
+                    "width": capture.width,
+                    "height": capture.height,
+                    "quality": capture.quality,
+                    "fullPage": capture.fullPage,
+                    "size": capture.jpeg.count,
+                    "timestamp": ISO8601DateFormatter().string(from: capture.timestamp)
+                ]
+
             // Cookies
             case "getCookies":
                 let cookies = await controller.getCookies()
