@@ -369,6 +369,152 @@ vision_click_mark() {
 }
 
 # ============================================================================
+# Selector Cache - Learn and Remember Working Selectors Per Domain
+# ============================================================================
+#
+# The selector cache persists working selectors per domain with reliability scores.
+# Use it to:
+# 1. Learn what selectors work after successful actions
+# 2. Recall cached selectors before trying to find new ones
+# 3. Track reliability (success/fail counts) over time
+#
+
+# Learn a successful selector for an action
+# Usage: selector_learn "add-to-cart" "#add-to-cart-button" [url]
+# url defaults to current page
+selector_learn() {
+    local action="$1"
+    local selector="$2"
+    local url="${3:-$(vision_url)}"
+
+    curl -s -X POST "$COMMAND_SERVER/command" \
+        -H "Content-Type: application/json" \
+        -d "{\"id\":\"learn\",\"method\":\"selectorCache.learn\",\"params\":{\"action\":\"$action\",\"selector\":\"$selector\",\"url\":\"$url\"}}" | jq -c '.result'
+}
+
+# Learn selector with attributes for better matching
+# Usage: selector_learn_with_attrs "add-to-cart" "#atc" "url" '{"text":"Add to Cart","class":"btn-primary"}'
+selector_learn_with_attrs() {
+    local action="$1"
+    local selector="$2"
+    local url="$3"
+    local attrs="$4"
+
+    curl -s -X POST "$COMMAND_SERVER/command" \
+        -H "Content-Type: application/json" \
+        -d "{\"id\":\"learn\",\"method\":\"selectorCache.learn\",\"params\":{\"action\":\"$action\",\"selector\":\"$selector\",\"url\":\"$url\",\"attributes\":$attrs}}" | jq -c '.result'
+}
+
+# Recall cached selector for an action
+# Usage: selector_recall "add-to-cart" [url]
+# Returns: {selector, reliability, successCount, ...} or null
+selector_recall() {
+    local action="$1"
+    local url="${2:-$(vision_url)}"
+
+    curl -s -X POST "$COMMAND_SERVER/command" \
+        -H "Content-Type: application/json" \
+        -d "{\"id\":\"recall\",\"method\":\"selectorCache.recall\",\"params\":{\"action\":\"$action\",\"url\":\"$url\"}}" | jq -c '.result'
+}
+
+# Record a selector failure (decreases reliability)
+# Usage: selector_fail "add-to-cart" "#old-button" [url]
+selector_fail() {
+    local action="$1"
+    local selector="$2"
+    local url="${3:-$(vision_url)}"
+
+    curl -s -X POST "$COMMAND_SERVER/command" \
+        -H "Content-Type: application/json" \
+        -d "{\"id\":\"fail\",\"method\":\"selectorCache.recordFailure\",\"params\":{\"action\":\"$action\",\"selector\":\"$selector\",\"url\":\"$url\"}}" | jq -c '.result'
+}
+
+# Get all cached selectors for current domain
+# Usage: selector_get_all [url]
+selector_get_all() {
+    local url="${1:-$(vision_url)}"
+
+    curl -s -X POST "$COMMAND_SERVER/command" \
+        -H "Content-Type: application/json" \
+        -d "{\"id\":\"getall\",\"method\":\"selectorCache.getAll\",\"params\":{\"url\":\"$url\"}}" | jq '.result'
+}
+
+# List all domains with cached selectors
+# Usage: selector_domains
+selector_domains() {
+    curl -s -X POST "$COMMAND_SERVER/command" \
+        -H "Content-Type: application/json" \
+        -d '{"id":"domains","method":"selectorCache.getDomains","params":{}}' | jq '.result'
+}
+
+# Get cache statistics
+# Usage: selector_stats
+selector_stats() {
+    curl -s -X POST "$COMMAND_SERVER/command" \
+        -H "Content-Type: application/json" \
+        -d '{"id":"stats","method":"selectorCache.getStats","params":{}}' | jq '.result'
+}
+
+# Clear cache for a domain
+# Usage: selector_clear "amazon.com"
+selector_clear() {
+    local domain="$1"
+
+    curl -s -X POST "$COMMAND_SERVER/command" \
+        -H "Content-Type: application/json" \
+        -d "{\"id\":\"clear\",\"method\":\"selectorCache.clear\",\"params\":{\"domain\":\"$domain\"}}" | jq -c '.result'
+}
+
+# Export entire cache (for backup/analysis)
+# Usage: selector_export > cache-backup.json
+selector_export() {
+    curl -s -X POST "$COMMAND_SERVER/command" \
+        -H "Content-Type: application/json" \
+        -d '{"id":"export","method":"selectorCache.export","params":{}}' | jq '.result'
+}
+
+# Smart click - tries cached selector first, falls back to text search
+# Usage: selector_click "add-to-cart" "Add to Cart"
+# Returns: {success, usedCache, selector}
+selector_click() {
+    local action="$1"
+    local fallback_text="$2"
+
+    # Try cached selector first
+    local cached=$(selector_recall "$action")
+
+    if [ "$cached" != "null" ] && [ -n "$cached" ]; then
+        local selector=$(echo "$cached" | jq -r '.selector')
+        # Try to click it
+        local result=$(vision_click "$selector")
+        local success=$(echo "$result" | jq -r '.success')
+
+        if [ "$success" = "true" ]; then
+            # Update success count
+            selector_learn "$action" "$selector" >/dev/null
+            echo "{\"success\":true,\"usedCache\":true,\"selector\":\"$selector\"}"
+            return 0
+        else
+            # Record failure
+            selector_fail "$action" "$selector" >/dev/null
+        fi
+    fi
+
+    # Fall back to text search
+    local result=$(vision_click_text "$fallback_text")
+    local success=$(echo "$result" | jq -r '.success')
+
+    if [ "$success" = "true" ]; then
+        # Learn from success - we don't know the exact selector, but we can note the action worked
+        echo "{\"success\":true,\"usedCache\":false,\"method\":\"text\",\"text\":\"$fallback_text\"}"
+        return 0
+    fi
+
+    echo "{\"success\":false,\"usedCache\":false,\"error\":\"both cache and fallback failed\"}"
+    return 1
+}
+
+# ============================================================================
 # Workflow Completion
 # ============================================================================
 
@@ -457,6 +603,17 @@ SET-OF-MARK:
   vision_mark                     Label elements with numbers
   vision_unmark                   Remove labels
   vision_click_mark 5             Click element #5
+
+SELECTOR CACHE (per-domain learning):
+  selector_learn "action" "sel"   Learn successful selector
+  selector_recall "action"        Get cached selector (or null)
+  selector_fail "action" "sel"    Record failure (decreases reliability)
+  selector_click "action" "text"  Smart click: cache first, fallback to text
+  selector_get_all                Get all cached selectors for domain
+  selector_domains                List domains with cached data
+  selector_stats                  Get cache statistics
+  selector_export                 Export all cache data as JSON
+  selector_clear "domain"         Clear cache for domain
 
 EXAMPLE:
   source watchdog/vision-loop.sh

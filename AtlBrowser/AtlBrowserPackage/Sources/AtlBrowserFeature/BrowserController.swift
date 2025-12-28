@@ -1558,6 +1558,196 @@ struct VisionCapture {
     let timestamp: Date     // Capture timestamp
 }
 
+// MARK: - Selector Cache
+
+/// Cached selector entry with metadata
+struct CachedSelector: Codable {
+    let selector: String        // CSS selector that worked
+    let action: String          // Action name (e.g., "add-to-cart", "search-box")
+    var successCount: Int       // How many times it worked
+    var failCount: Int          // How many times it failed
+    var lastUsed: Date          // Last successful use
+    var lastFailed: Date?       // Last failure (if any)
+    let discoveredAt: Date      // When first discovered
+    var attributes: [String: String]  // Extra context (text, aria-label, etc.)
+
+    var reliability: Double {
+        let total = successCount + failCount
+        guard total > 0 else { return 0.5 }
+        return Double(successCount) / Double(total)
+    }
+}
+
+/// Selector cache for a domain
+struct DomainCache: Codable {
+    let domain: String
+    var selectors: [String: CachedSelector]  // action -> selector
+    var lastUpdated: Date
+
+    init(domain: String) {
+        self.domain = domain
+        self.selectors = [:]
+        self.lastUpdated = Date()
+    }
+}
+
+/// Global selector cache - persists across sessions
+@MainActor
+final class SelectorCache {
+    static let shared = SelectorCache()
+
+    private var cache: [String: DomainCache] = [:]  // domain -> cache
+    private let cacheURL: URL
+
+    private init() {
+        // Store in app's documents directory
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        cacheURL = docs.appendingPathComponent("selector-cache.json")
+        load()
+    }
+
+    // MARK: - Core Operations
+
+    /// Get domain from URL
+    private func extractDomain(from urlString: String) -> String? {
+        guard let url = URL(string: urlString),
+              let host = url.host else { return nil }
+        // Remove www. prefix for consistency
+        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+    }
+
+    /// Learn a successful selector
+    func learn(action: String, selector: String, url: String, attributes: [String: String] = [:]) {
+        guard let domain = extractDomain(from: url) else { return }
+
+        if cache[domain] == nil {
+            cache[domain] = DomainCache(domain: domain)
+        }
+
+        if var existing = cache[domain]?.selectors[action] {
+            existing.successCount += 1
+            existing.lastUsed = Date()
+            cache[domain]?.selectors[action] = existing
+        } else {
+            let entry = CachedSelector(
+                selector: selector,
+                action: action,
+                successCount: 1,
+                failCount: 0,
+                lastUsed: Date(),
+                lastFailed: nil,
+                discoveredAt: Date(),
+                attributes: attributes
+            )
+            cache[domain]?.selectors[action] = entry
+        }
+
+        cache[domain]?.lastUpdated = Date()
+        save()
+    }
+
+    /// Record a selector failure
+    func recordFailure(action: String, selector: String, url: String) {
+        guard let domain = extractDomain(from: url) else { return }
+
+        if var existing = cache[domain]?.selectors[action], existing.selector == selector {
+            existing.failCount += 1
+            existing.lastFailed = Date()
+            cache[domain]?.selectors[action] = existing
+            cache[domain]?.lastUpdated = Date()
+            save()
+        }
+    }
+
+    /// Recall best selector for an action
+    func recall(action: String, url: String) -> CachedSelector? {
+        guard let domain = extractDomain(from: url) else { return nil }
+        return cache[domain]?.selectors[action]
+    }
+
+    /// Get all cached selectors for a domain
+    func getAll(for url: String) -> [String: CachedSelector] {
+        guard let domain = extractDomain(from: url) else { return [:] }
+        return cache[domain]?.selectors ?? [:]
+    }
+
+    /// Get all domains with cached selectors
+    func getAllDomains() -> [String] {
+        return Array(cache.keys).sorted()
+    }
+
+    /// Get full cache data for export
+    func exportCache() -> [String: DomainCache] {
+        return cache
+    }
+
+    /// Clear cache for a domain
+    func clear(domain: String) {
+        cache.removeValue(forKey: domain)
+        save()
+    }
+
+    /// Clear all cache
+    func clearAll() {
+        cache.removeAll()
+        save()
+    }
+
+    // MARK: - Persistence
+
+    private func save() {
+        do {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            encoder.outputFormatting = .prettyPrinted
+            let data = try encoder.encode(cache)
+            try data.write(to: cacheURL)
+        } catch {
+            print("SelectorCache: Failed to save: \(error)")
+        }
+    }
+
+    private func load() {
+        guard FileManager.default.fileExists(atPath: cacheURL.path) else { return }
+        do {
+            let data = try Data(contentsOf: cacheURL)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            cache = try decoder.decode([String: DomainCache].self, from: data)
+        } catch {
+            print("SelectorCache: Failed to load: \(error)")
+        }
+    }
+
+    /// Get cache file path (for debugging)
+    func getCachePath() -> String {
+        return cacheURL.path
+    }
+
+    /// Get cache stats
+    func getStats() -> [String: Any] {
+        var totalSelectors = 0
+        var totalSuccesses = 0
+        var totalFailures = 0
+
+        for (_, domainCache) in cache {
+            for (_, selector) in domainCache.selectors {
+                totalSelectors += 1
+                totalSuccesses += selector.successCount
+                totalFailures += selector.failCount
+            }
+        }
+
+        return [
+            "domains": cache.count,
+            "selectors": totalSelectors,
+            "totalSuccesses": totalSuccesses,
+            "totalFailures": totalFailures,
+            "cachePath": cacheURL.path
+        ]
+    }
+}
+
 // MARK: - Errors
 
 enum BrowserError: LocalizedError {

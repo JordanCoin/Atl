@@ -543,6 +543,103 @@ final class CommandServer {
                     ]
                 }
 
+            // MARK: - Selector Cache
+
+            case "selectorCache.learn":
+                let action = command.params?["action"] as? String ?? ""
+                let selector = command.params?["selector"] as? String ?? ""
+                let url = command.params?["url"] as? String ?? controller.currentURL?.absoluteString ?? ""
+                let attributes = command.params?["attributes"] as? [String: String] ?? [:]
+
+                SelectorCache.shared.learn(action: action, selector: selector, url: url, attributes: attributes)
+                result = ["learned": true, "action": action, "selector": selector]
+
+            case "selectorCache.recall":
+                let action = command.params?["action"] as? String ?? ""
+                let url = command.params?["url"] as? String ?? controller.currentURL?.absoluteString ?? ""
+
+                if let cached = SelectorCache.shared.recall(action: action, url: url) {
+                    result = [
+                        "found": true,
+                        "selector": cached.selector,
+                        "action": cached.action,
+                        "successCount": cached.successCount,
+                        "failCount": cached.failCount,
+                        "reliability": cached.reliability,
+                        "lastUsed": ISO8601DateFormatter().string(from: cached.lastUsed)
+                    ]
+                } else {
+                    result = ["found": false, "action": action]
+                }
+
+            case "selectorCache.recordFailure":
+                let action = command.params?["action"] as? String ?? ""
+                let selector = command.params?["selector"] as? String ?? ""
+                let url = command.params?["url"] as? String ?? controller.currentURL?.absoluteString ?? ""
+
+                SelectorCache.shared.recordFailure(action: action, selector: selector, url: url)
+                result = ["recorded": true, "action": action]
+
+            case "selectorCache.getAll":
+                let url = command.params?["url"] as? String ?? controller.currentURL?.absoluteString ?? ""
+                let selectors = SelectorCache.shared.getAll(for: url)
+
+                var selectorsDict: [String: [String: Any]] = [:]
+                for (action, cached) in selectors {
+                    selectorsDict[action] = [
+                        "selector": cached.selector,
+                        "successCount": cached.successCount,
+                        "failCount": cached.failCount,
+                        "reliability": cached.reliability,
+                        "lastUsed": ISO8601DateFormatter().string(from: cached.lastUsed)
+                    ]
+                }
+                result = ["selectors": selectorsDict, "count": selectors.count]
+
+            case "selectorCache.getDomains":
+                let domains = SelectorCache.shared.getAllDomains()
+                result = ["domains": domains, "count": domains.count]
+
+            case "selectorCache.getStats":
+                result = SelectorCache.shared.getStats()
+
+            case "selectorCache.clear":
+                if let domain = command.params?["domain"] as? String {
+                    SelectorCache.shared.clear(domain: domain)
+                    result = ["cleared": domain]
+                } else {
+                    SelectorCache.shared.clearAll()
+                    result = ["cleared": "all"]
+                }
+
+            case "selectorCache.export":
+                let cache = SelectorCache.shared.exportCache()
+                var exportData: [String: Any] = [:]
+
+                for (domain, domainCache) in cache {
+                    var domainData: [String: Any] = [
+                        "lastUpdated": ISO8601DateFormatter().string(from: domainCache.lastUpdated),
+                        "selectors": [:]
+                    ]
+
+                    var selectorsData: [String: [String: Any]] = [:]
+                    for (action, cached) in domainCache.selectors {
+                        selectorsData[action] = [
+                            "selector": cached.selector,
+                            "successCount": cached.successCount,
+                            "failCount": cached.failCount,
+                            "reliability": cached.reliability,
+                            "discoveredAt": ISO8601DateFormatter().string(from: cached.discoveredAt),
+                            "lastUsed": ISO8601DateFormatter().string(from: cached.lastUsed),
+                            "attributes": cached.attributes
+                        ]
+                    }
+                    domainData["selectors"] = selectorsData
+                    exportData[domain] = domainData
+                }
+
+                result = ["cache": exportData, "domains": cache.count]
+
             default:
                 return CommandResponse(id: command.id, success: false, result: nil, error: "Unknown command: \(command.method)")
             }
