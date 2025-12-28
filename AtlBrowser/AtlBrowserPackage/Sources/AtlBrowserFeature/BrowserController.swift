@@ -764,6 +764,149 @@ class BrowserController: ObservableObject {
         throw BrowserError.selectorChainExhausted(selectors)
     }
 
+    // MARK: - Page Ready Detection
+
+    /// Result of waitForReady check
+    struct PageReadyResult: Sendable {
+        let ready: Bool
+        let readyState: String
+        let domStable: Bool
+        let networkIdle: Bool
+        let waitedMs: Int
+        let checks: Int
+    }
+
+    /// Wait for the page to be fully ready
+    /// Checks: document.readyState, DOM stability (no mutations), network idle
+    /// - Parameters:
+    ///   - timeout: Maximum time to wait (default 10s)
+    ///   - stabilityMs: How long DOM/network must be stable (default 500ms)
+    ///   - requiredSelector: Optional selector that must exist
+    /// - Returns: PageReadyResult with details about what was detected
+    func waitForReady(
+        timeout: TimeInterval = 10,
+        stabilityMs: Int = 500,
+        requiredSelector: String? = nil
+    ) async throws -> PageReadyResult {
+        let startTime = Date()
+        var checks = 0
+
+        // Inject the page ready detection script once
+        let setupScript = """
+        (function() {
+            if (window.__pageReadyState) return;
+
+            window.__pageReadyState = {
+                lastMutation: Date.now(),
+                lastNetwork: Date.now(),
+                pendingRequests: 0,
+                mutations: 0
+            };
+
+            // Track DOM mutations
+            const observer = new MutationObserver(() => {
+                window.__pageReadyState.lastMutation = Date.now();
+                window.__pageReadyState.mutations++;
+            });
+            observer.observe(document.body || document.documentElement, {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                characterData: true
+            });
+
+            // Track network requests via fetch
+            const origFetch = window.fetch;
+            window.fetch = function(...args) {
+                window.__pageReadyState.pendingRequests++;
+                window.__pageReadyState.lastNetwork = Date.now();
+                return origFetch.apply(this, args).finally(() => {
+                    window.__pageReadyState.pendingRequests--;
+                    window.__pageReadyState.lastNetwork = Date.now();
+                });
+            };
+
+            // Track XMLHttpRequest
+            const origOpen = XMLHttpRequest.prototype.open;
+            const origSend = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.open = function(...args) {
+                this.__tracked = true;
+                return origOpen.apply(this, args);
+            };
+            XMLHttpRequest.prototype.send = function(...args) {
+                if (this.__tracked) {
+                    window.__pageReadyState.pendingRequests++;
+                    window.__pageReadyState.lastNetwork = Date.now();
+                    this.addEventListener('loadend', () => {
+                        window.__pageReadyState.pendingRequests--;
+                        window.__pageReadyState.lastNetwork = Date.now();
+                    });
+                }
+                return origSend.apply(this, args);
+            };
+        })();
+        """
+        _ = try? await evaluateJavaScript(setupScript)
+
+        // Check function
+        let selectorCheck = requiredSelector.map { "document.querySelector('\($0.escapedForJS)') !== null" } ?? "true"
+
+        while Date().timeIntervalSince(startTime) < timeout {
+            checks += 1
+
+            let checkScript = """
+            (function() {
+                const state = window.__pageReadyState || { lastMutation: 0, lastNetwork: 0, pendingRequests: 0 };
+                const now = Date.now();
+                const stabilityMs = \(stabilityMs);
+
+                const readyState = document.readyState;
+                const domStable = (now - state.lastMutation) >= stabilityMs;
+                const networkIdle = state.pendingRequests === 0 && (now - state.lastNetwork) >= stabilityMs;
+                const selectorFound = \(selectorCheck);
+
+                return {
+                    readyState: readyState,
+                    domStable: domStable,
+                    networkIdle: networkIdle,
+                    selectorFound: selectorFound,
+                    pendingRequests: state.pendingRequests,
+                    msSinceMutation: now - state.lastMutation,
+                    msSinceNetwork: now - state.lastNetwork,
+                    ready: readyState === 'complete' && domStable && networkIdle && selectorFound
+                };
+            })();
+            """
+
+            if let result = try? await evaluateJavaScript(checkScript) as? [String: Any],
+               let ready = result["ready"] as? Bool,
+               ready {
+                let waitedMs = Int(Date().timeIntervalSince(startTime) * 1000)
+                return PageReadyResult(
+                    ready: true,
+                    readyState: result["readyState"] as? String ?? "unknown",
+                    domStable: result["domStable"] as? Bool ?? false,
+                    networkIdle: result["networkIdle"] as? Bool ?? false,
+                    waitedMs: waitedMs,
+                    checks: checks
+                )
+            }
+
+            try await Task.sleep(nanoseconds: 100_000_000) // 100ms between checks
+        }
+
+        // Timeout - return current state
+        let waitedMs = Int(Date().timeIntervalSince(startTime) * 1000)
+        return PageReadyResult(
+            ready: false,
+            readyState: "timeout",
+            domStable: false,
+            networkIdle: false,
+            waitedMs: waitedMs,
+            checks: checks
+        )
+    }
+
     /// Resolve a selector chain, trying each selector in order
     /// Returns the first matching selector and its extracted value
     func resolveSelector(_ chain: SelectorChain, extract: String = "textContent") async -> ExtractionResult {

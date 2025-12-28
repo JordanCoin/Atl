@@ -49,18 +49,45 @@ vision_run_dir() {
 }
 
 # ============================================================================
+# Page Ready Detection
+# ============================================================================
+
+# Wait for page to be fully ready (DOM stable, network idle)
+# Usage: vision_wait_ready [timeout] [stabilityMs] [selector]
+# Returns: JSON with ready status, timing, and diagnostics
+vision_wait_ready() {
+    local timeout="${1:-10}"
+    local stability_ms="${2:-500}"
+    local selector="${3:-}"
+
+    local params="{\"timeout\":$timeout,\"stabilityMs\":$stability_ms"
+    if [ -n "$selector" ]; then
+        params="$params,\"selector\":\"$selector\""
+    fi
+    params="$params}"
+
+    curl -s -X POST "$COMMAND_SERVER/command" \
+        -H "Content-Type: application/json" \
+        -d "{\"id\":\"ready\",\"method\":\"waitForReady\",\"params\":$params}" | jq -c '.result'
+}
+
+# ============================================================================
 # Navigation
 # ============================================================================
 
-# Navigate to URL
-# Usage: vision_goto "https://amazon.com"
+# Navigate to URL and wait for page ready
+# Usage: vision_goto "https://amazon.com" [timeout] [selector]
 vision_goto() {
     local url="$1"
-    local wait="${2:-3}"
+    local timeout="${2:-10}"
+    local selector="${3:-}"
+
     curl -s -X POST "$COMMAND_SERVER/command" \
         -H "Content-Type: application/json" \
         -d "{\"id\":\"nav\",\"method\":\"goto\",\"params\":{\"url\":\"$url\"}}" | jq -c '{success}'
-    sleep "$wait"
+
+    # Wait for page ready instead of fixed sleep
+    vision_wait_ready "$timeout" 500 "$selector"
 }
 
 # Get current URL
@@ -312,8 +339,15 @@ WORKFLOW:
   vision_capture "step-name"      Capture PDF for Claude to read
   vision_complete "status" "msg"  Finalize workflow
 
+PAGE READY (replaces fixed sleep):
+  vision_wait_ready [timeout] [stabilityMs] [selector]
+                                  Wait for DOM stable + network idle
+                                  Returns: {ready,waitedMs,checks,...}
+  vision_goto "url" [timeout] [selector]
+                                  Navigate + auto wait for ready
+
 NAVIGATION:
-  vision_goto "url"               Navigate to URL
+  vision_goto "url"               Navigate to URL (auto waits for ready)
   vision_url                      Get current URL
   vision_title                    Get page title
 
@@ -341,9 +375,10 @@ SET-OF-MARK:
 EXAMPLE:
   source watchdog/vision-loop.sh
   vision_init "cart-flow"
-  vision_goto "https://amazon.com/s?k=usb+cable"
+  vision_goto "https://amazon.com/s?k=usb+cable"  # Auto-waits for ready
   vision_capture "search-results"    # Claude reads this PDF
   vision_click_text "Add to cart"    # Claude decides this action
+  vision_wait_ready 5                # Wait for DOM to settle after action
   vision_capture "after-add"         # Claude verifies result
   vision_goto "https://amazon.com/cart"
   vision_capture "cart"              # Claude confirms item in cart

@@ -255,6 +255,24 @@ final class CommandServer {
             case "waitForNavigation":
                 _ = await controller.waitForNavigation()
 
+            case "waitForReady":
+                let timeout = command.params?["timeout"] as? TimeInterval ?? 10
+                let stabilityMs = command.params?["stabilityMs"] as? Int ?? 500
+                let requiredSelector = command.params?["selector"] as? String
+                let readyResult = try await controller.waitForReady(
+                    timeout: timeout,
+                    stabilityMs: stabilityMs,
+                    requiredSelector: requiredSelector
+                )
+                result = [
+                    "ready": readyResult.ready,
+                    "readyState": readyResult.readyState,
+                    "domStable": readyResult.domStable,
+                    "networkIdle": readyResult.networkIdle,
+                    "waitedMs": readyResult.waitedMs,
+                    "checks": readyResult.checks
+                ]
+
             // JavaScript
             case "evaluate":
                 if let script = command.params?["script"] as? String {
