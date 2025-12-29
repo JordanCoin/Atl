@@ -26,21 +26,42 @@ VISION_BASE_DIR="${VISION_BASE_DIR:-/Users/jordan/MakersStudio/Projects/Atl/watc
 VISION_RUN_ID=""
 VISION_RUN_DIR=""
 VISION_STEP=0
+VISION_TASK_ID=""
+VISION_SIM_UDID=""
+
+# Source orchestrator for centralized state management
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/orchestrator.sh" ]; then
+    source "$SCRIPT_DIR/orchestrator.sh"
+fi
 
 # ============================================================================
 # Initialization
 # ============================================================================
 
 # Initialize a new vision workflow run
-# Usage: vision_init "workflow-name"
+# Usage: vision_init "workflow-name" [simulator-udid]
 vision_init() {
     local workflow_name="${1:-vision-workflow}"
+    local sim_udid="${2:-}"
+
     VISION_RUN_ID="${workflow_name}-$(date +%Y%m%d-%H%M%S)"
     VISION_RUN_DIR="$VISION_BASE_DIR/$VISION_RUN_ID"
     VISION_STEP=0
+    VISION_TASK_ID="$VISION_RUN_ID"
+    VISION_SIM_UDID="$sim_udid"
+
     mkdir -p "$VISION_RUN_DIR"
-    echo "{\"runId\":\"$VISION_RUN_ID\",\"startTime\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"workflow\":\"$workflow_name\"}" > "$VISION_RUN_DIR/manifest.json"
+    echo "{\"runId\":\"$VISION_RUN_ID\",\"startTime\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"workflow\":\"$workflow_name\",\"simulator\":\"$sim_udid\"}" > "$VISION_RUN_DIR/manifest.json"
     _metrics_init
+
+    # Register run with Python/SQLite
+    if [ -n "$sim_udid" ]; then
+        python3 -m atl -f compact run start "$VISION_RUN_ID" "$workflow_name" --simulator "$sim_udid" >/dev/null 2>&1 || true
+    else
+        python3 -m atl -f compact run start "$VISION_RUN_ID" "$workflow_name" >/dev/null 2>&1 || true
+    fi
+
     echo "$VISION_RUN_DIR"
 }
 
@@ -68,11 +89,14 @@ vision_run_dir() {
 #   - Input: $3 per 1M tokens
 #   - Output: $15 per 1M tokens (not tracked here)
 
-METRICS_FILE=""
+# Metrics are now tracked in SQLite via Python CLI
+# These wrapper functions maintain shell API compatibility
 
-# Initialize metrics for current run
+# Initialize metrics for current run (now handled by run start)
 # Called automatically by vision_init
 _metrics_init() {
+    # Metrics are created automatically when run starts
+    # Keep local file for backwards compatibility with vision_cost/vision_summary
     if [ -z "$VISION_RUN_DIR" ]; then return; fi
     METRICS_FILE="$VISION_RUN_DIR/metrics.json"
     cat > "$METRICS_FILE" << 'EOF'
@@ -90,26 +114,42 @@ EOF
 # Log a capture event
 # Usage: _metrics_capture "light" 17000
 _metrics_capture() {
-    if [ -z "$METRICS_FILE" ] || [ ! -f "$METRICS_FILE" ]; then return; fi
     local mode="$1"
     local bytes="$2"
 
-    local temp=$(mktemp)
-    jq --arg mode "$mode" --argjson bytes "$bytes" '
-        .captures[$mode] += 1 |
-        .bytes[$mode] += $bytes |
-        .bytes.total += $bytes
-    ' "$METRICS_FILE" > "$temp" && mv "$temp" "$METRICS_FILE"
+    # Update SQLite via Python CLI
+    if [ -n "$VISION_RUN_ID" ]; then
+        python3 -m atl -f compact metrics capture "$VISION_RUN_ID" "$mode" "$bytes" >/dev/null 2>&1 || true
+    fi
+
+    # Also update local file for backwards compat
+    if [ -n "$METRICS_FILE" ] && [ -f "$METRICS_FILE" ]; then
+        local temp=$(mktemp)
+        jq --arg mode "$mode" --argjson bytes "$bytes" '
+            .captures[$mode] += 1 |
+            .bytes[$mode] += $bytes |
+            .bytes.total += $bytes
+        ' "$METRICS_FILE" > "$temp" && mv "$temp" "$METRICS_FILE"
+    fi
 }
 
 # Log an action event
 # Usage: _metrics_action "clicks"
 _metrics_action() {
-    if [ -z "$METRICS_FILE" ] || [ ! -f "$METRICS_FILE" ]; then return; fi
     local action="$1"
+    # Map shell action names to CLI action types (click, type, navigation, scroll)
+    local action_type="${action%s}"  # Remove trailing 's' (clicks -> click)
 
-    local temp=$(mktemp)
-    jq --arg action "$action" '.actions[$action] += 1' "$METRICS_FILE" > "$temp" && mv "$temp" "$METRICS_FILE"
+    # Update SQLite via Python CLI
+    if [ -n "$VISION_RUN_ID" ]; then
+        python3 -m atl -f compact metrics action "$VISION_RUN_ID" "$action_type" >/dev/null 2>&1 || true
+    fi
+
+    # Also update local file for backwards compat
+    if [ -n "$METRICS_FILE" ] && [ -f "$METRICS_FILE" ]; then
+        local temp=$(mktemp)
+        jq --arg action "$action" '.actions[$action] += 1' "$METRICS_FILE" > "$temp" && mv "$temp" "$METRICS_FILE"
+    fi
 }
 
 # Log selector cache hit/miss
@@ -474,6 +514,8 @@ EOF
 # Usage: vision_click "#add-to-cart-button"
 vision_click() {
     local selector="$1"
+    # Escape quotes for JSON
+    selector="${selector//\"/\\\"}"
     _metrics_action "clicks"
     curl -s -X POST "$COMMAND_SERVER/command" \
         -H "Content-Type: application/json" \
@@ -517,6 +559,9 @@ vision_type() {
 vision_fill() {
     local selector="$1"
     local value="$2"
+    # Escape quotes for JSON
+    selector="${selector//\"/\\\"}"
+    value="${value//\"/\\\"}"
     curl -s -X POST "$COMMAND_SERVER/command" \
         -H "Content-Type: application/json" \
         -d "{\"id\":\"fill\",\"method\":\"fill\",\"params\":{\"selector\":\"$selector\",\"value\":\"$value\"}}" | jq -c '{success}'
@@ -644,9 +689,8 @@ selector_learn() {
     local selector="$2"
     local url="${3:-$(vision_url)}"
 
-    curl -s -X POST "$COMMAND_SERVER/command" \
-        -H "Content-Type: application/json" \
-        -d "{\"id\":\"learn\",\"method\":\"selectorCache.learn\",\"params\":{\"action\":\"$action\",\"selector\":\"$selector\",\"url\":\"$url\"}}" | jq -c '.result'
+    # Use Python/SQLite instead of iOS app sandbox
+    python3 -m atl -f compact selector learn "$action" "$selector" "$url"
 }
 
 # Learn selector with attributes for better matching
@@ -657,9 +701,7 @@ selector_learn_with_attrs() {
     local url="$3"
     local attrs="$4"
 
-    curl -s -X POST "$COMMAND_SERVER/command" \
-        -H "Content-Type: application/json" \
-        -d "{\"id\":\"learn\",\"method\":\"selectorCache.learn\",\"params\":{\"action\":\"$action\",\"selector\":\"$selector\",\"url\":\"$url\",\"attributes\":$attrs}}" | jq -c '.result'
+    python3 -m atl -f compact selector learn "$action" "$selector" "$url" --attributes "$attrs"
 }
 
 # Recall cached selector for an action
@@ -669,9 +711,8 @@ selector_recall() {
     local action="$1"
     local url="${2:-$(vision_url)}"
 
-    curl -s -X POST "$COMMAND_SERVER/command" \
-        -H "Content-Type: application/json" \
-        -d "{\"id\":\"recall\",\"method\":\"selectorCache.recall\",\"params\":{\"action\":\"$action\",\"url\":\"$url\"}}" | jq -c '.result'
+    # Use Python/SQLite - returns just the selector or exits 1 if not found
+    python3 -m atl -f compact selector recall "$action" "$url" 2>/dev/null
 }
 
 # Record a selector failure (decreases reliability)
@@ -681,53 +722,44 @@ selector_fail() {
     local selector="$2"
     local url="${3:-$(vision_url)}"
 
-    curl -s -X POST "$COMMAND_SERVER/command" \
-        -H "Content-Type: application/json" \
-        -d "{\"id\":\"fail\",\"method\":\"selectorCache.recordFailure\",\"params\":{\"action\":\"$action\",\"selector\":\"$selector\",\"url\":\"$url\"}}" | jq -c '.result'
+    # Use Python/SQLite
+    python3 -m atl -f compact selector fail "$action" "$selector" "$url"
 }
 
 # Get all cached selectors for current domain
 # Usage: selector_get_all [url]
 selector_get_all() {
     local url="${1:-$(vision_url)}"
+    # Extract domain from URL for filtering
+    local domain=$(echo "$url" | sed -E 's#^https?://([^/]+).*#\1#')
 
-    curl -s -X POST "$COMMAND_SERVER/command" \
-        -H "Content-Type: application/json" \
-        -d "{\"id\":\"getall\",\"method\":\"selectorCache.getAll\",\"params\":{\"url\":\"$url\"}}" | jq '.result'
+    python3 -m atl selector list --domain "$domain"
 }
 
 # List all domains with cached selectors
 # Usage: selector_domains
 selector_domains() {
-    curl -s -X POST "$COMMAND_SERVER/command" \
-        -H "Content-Type: application/json" \
-        -d '{"id":"domains","method":"selectorCache.getDomains","params":{}}' | jq '.result'
+    # List all selectors grouped by domain
+    python3 -m atl selector list | jq -r 'keys[]' 2>/dev/null
 }
 
 # Get cache statistics
 # Usage: selector_stats
 selector_stats() {
-    curl -s -X POST "$COMMAND_SERVER/command" \
-        -H "Content-Type: application/json" \
-        -d '{"id":"stats","method":"selectorCache.getStats","params":{}}' | jq '.result'
+    python3 -m atl selector stats
 }
 
 # Clear cache for a domain
 # Usage: selector_clear "amazon.com"
 selector_clear() {
     local domain="$1"
-
-    curl -s -X POST "$COMMAND_SERVER/command" \
-        -H "Content-Type: application/json" \
-        -d "{\"id\":\"clear\",\"method\":\"selectorCache.clear\",\"params\":{\"domain\":\"$domain\"}}" | jq -c '.result'
+    python3 -m atl -f compact selector clear --domain "$domain"
 }
 
 # Export entire cache (for backup/analysis)
 # Usage: selector_export > cache-backup.json
 selector_export() {
-    curl -s -X POST "$COMMAND_SERVER/command" \
-        -H "Content-Type: application/json" \
-        -d '{"id":"export","method":"selectorCache.export","params":{}}' | jq '.result'
+    python3 -m atl selector list
 }
 
 # Smart click - tries cached selector first, falls back to text search
@@ -778,20 +810,28 @@ selector_click() {
 # Finalize workflow and save summary
 # Usage: vision_complete "success" "Added item to cart"
 vision_complete() {
-    local status="${1:-success}"
-    local message="${2:-Workflow completed}"
+    local run_status="${1:-success}"
+    local run_message="${2:-Workflow completed}"
 
     local manifest="$VISION_RUN_DIR/manifest.json"
     local temp=$(mktemp)
 
-    jq --arg status "$status" \
-       --arg message "$message" \
+    jq --arg status "$run_status" \
+       --arg message "$run_message" \
        --arg endTime "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
        --arg steps "$VISION_STEP" \
        '. + {status:$status,message:$message,endTime:$endTime,totalSteps:($steps|tonumber)}' \
        "$manifest" > "$temp" && mv "$temp" "$manifest"
 
-    echo "{\"runId\":\"$VISION_RUN_ID\",\"status\":\"$status\",\"steps\":$VISION_STEP,\"dir\":\"$VISION_RUN_DIR\"}"
+    # Complete run in Python/SQLite
+    if [ -n "$VISION_RUN_ID" ]; then
+        # Map status to CLI status
+        local cli_status="completed"
+        [[ "$run_status" != "success" ]] && cli_status="failed"
+        python3 -m atl -f compact run complete "$VISION_RUN_ID" --status "$cli_status" --steps "$VISION_STEP" >/dev/null 2>&1 || true
+    fi
+
+    echo "{\"runId\":\"$VISION_RUN_ID\",\"status\":\"$run_status\",\"steps\":$VISION_STEP,\"dir\":\"$VISION_RUN_DIR\"}"
 }
 
 # ============================================================================

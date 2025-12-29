@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.pyc
+
+# Runtime data
+state/
+runs/
+
+# Benchmark data
+benchmark/
