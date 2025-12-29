@@ -40,12 +40,239 @@ vision_init() {
     VISION_STEP=0
     mkdir -p "$VISION_RUN_DIR"
     echo "{\"runId\":\"$VISION_RUN_ID\",\"startTime\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"workflow\":\"$workflow_name\"}" > "$VISION_RUN_DIR/manifest.json"
+    _metrics_init
     echo "$VISION_RUN_DIR"
 }
 
 # Get current run directory
 vision_run_dir() {
     echo "$VISION_RUN_DIR"
+}
+
+# ============================================================================
+# Metrics Tracking - Cost & Usage Analytics
+# ============================================================================
+#
+# Tracks per-run:
+#   - Captures by mode (light, jpeg, pdf)
+#   - Bytes read (for token estimation)
+#   - Actions taken
+#   - Selector cache hits/misses
+#   - Estimated token cost
+#
+# Token estimation (conservative):
+#   - Text: ~4 tokens per character (varies by content)
+#   - Images: ~1 token per 4 bytes (Claude vision)
+#
+# Pricing (as of Dec 2024, Sonnet):
+#   - Input: $3 per 1M tokens
+#   - Output: $15 per 1M tokens (not tracked here)
+
+METRICS_FILE=""
+
+# Initialize metrics for current run
+# Called automatically by vision_init
+_metrics_init() {
+    if [ -z "$VISION_RUN_DIR" ]; then return; fi
+    METRICS_FILE="$VISION_RUN_DIR/metrics.json"
+    cat > "$METRICS_FILE" << 'EOF'
+{
+  "captures": {"light": 0, "jpeg": 0, "pdf": 0},
+  "bytes": {"light": 0, "jpeg": 0, "pdf": 0, "total": 0},
+  "actions": {"clicks": 0, "types": 0, "navigations": 0, "scrolls": 0},
+  "selectors": {"cacheHits": 0, "cacheMisses": 0, "learned": 0},
+  "timing": {"totalWaitMs": 0, "readyChecks": 0},
+  "errors": 0
+}
+EOF
+}
+
+# Log a capture event
+# Usage: _metrics_capture "light" 17000
+_metrics_capture() {
+    if [ -z "$METRICS_FILE" ] || [ ! -f "$METRICS_FILE" ]; then return; fi
+    local mode="$1"
+    local bytes="$2"
+
+    local temp=$(mktemp)
+    jq --arg mode "$mode" --argjson bytes "$bytes" '
+        .captures[$mode] += 1 |
+        .bytes[$mode] += $bytes |
+        .bytes.total += $bytes
+    ' "$METRICS_FILE" > "$temp" && mv "$temp" "$METRICS_FILE"
+}
+
+# Log an action event
+# Usage: _metrics_action "clicks"
+_metrics_action() {
+    if [ -z "$METRICS_FILE" ] || [ ! -f "$METRICS_FILE" ]; then return; fi
+    local action="$1"
+
+    local temp=$(mktemp)
+    jq --arg action "$action" '.actions[$action] += 1' "$METRICS_FILE" > "$temp" && mv "$temp" "$METRICS_FILE"
+}
+
+# Log selector cache hit/miss
+# Usage: _metrics_selector "hit" or _metrics_selector "miss" or _metrics_selector "learned"
+_metrics_selector() {
+    if [ -z "$METRICS_FILE" ] || [ ! -f "$METRICS_FILE" ]; then return; fi
+    local event="$1"
+
+    local temp=$(mktemp)
+    case "$event" in
+        hit) jq '.selectors.cacheHits += 1' "$METRICS_FILE" > "$temp" ;;
+        miss) jq '.selectors.cacheMisses += 1' "$METRICS_FILE" > "$temp" ;;
+        learned) jq '.selectors.learned += 1' "$METRICS_FILE" > "$temp" ;;
+    esac
+    mv "$temp" "$METRICS_FILE"
+}
+
+# Log wait/ready timing
+# Usage: _metrics_wait 530 8
+_metrics_wait() {
+    if [ -z "$METRICS_FILE" ] || [ ! -f "$METRICS_FILE" ]; then return; fi
+    local ms="$1"
+    local checks="${2:-1}"
+
+    local temp=$(mktemp)
+    jq --argjson ms "$ms" --argjson checks "$checks" '
+        .timing.totalWaitMs += $ms |
+        .timing.readyChecks += $checks
+    ' "$METRICS_FILE" > "$temp" && mv "$temp" "$METRICS_FILE"
+}
+
+# Log an error
+_metrics_error() {
+    if [ -z "$METRICS_FILE" ] || [ ! -f "$METRICS_FILE" ]; then return; fi
+    local temp=$(mktemp)
+    jq '.errors += 1' "$METRICS_FILE" > "$temp" && mv "$temp" "$METRICS_FILE"
+}
+
+# Get current metrics
+# Usage: vision_metrics
+vision_metrics() {
+    if [ -z "$METRICS_FILE" ] || [ ! -f "$METRICS_FILE" ]; then
+        echo '{"error": "no active run, call vision_init first"}'
+        return 1
+    fi
+    cat "$METRICS_FILE"
+}
+
+# Get cost estimate for current run
+# Usage: vision_cost
+vision_cost() {
+    if [ -z "$METRICS_FILE" ] || [ ! -f "$METRICS_FILE" ]; then
+        echo '{"error": "no active run"}'
+        return 1
+    fi
+
+    # Token estimation:
+    # - Light (text): ~0.25 tokens per byte (4 chars per token avg)
+    # - JPEG/PDF (images): ~0.25 tokens per byte (vision encoding)
+    # Pricing: $3 per 1M input tokens (Sonnet)
+
+    jq '
+        # Calculate tokens
+        (.bytes.light * 0.25) as $lightTokens |
+        (.bytes.jpeg * 0.25) as $jpegTokens |
+        (.bytes.pdf * 0.25) as $pdfTokens |
+        ($lightTokens + $jpegTokens + $pdfTokens) as $totalTokens |
+
+        # Calculate cost ($3 per 1M tokens)
+        ($totalTokens / 1000000 * 3) as $cost |
+
+        {
+            tokens: {
+                light: ($lightTokens | floor),
+                jpeg: ($jpegTokens | floor),
+                pdf: ($pdfTokens | floor),
+                total: ($totalTokens | floor)
+            },
+            cost: {
+                usd: ($cost * 100 | floor | . / 100),
+                formatted: ("$" + (($cost * 100 | floor | . / 100) | tostring))
+            },
+            captures: .captures,
+            bytes: .bytes
+        }
+    ' "$METRICS_FILE"
+}
+
+# Get detailed run summary with cost projection
+# Usage: vision_summary
+vision_summary() {
+    if [ -z "$METRICS_FILE" ] || [ ! -f "$METRICS_FILE" ]; then
+        echo '{"error": "no active run"}'
+        return 1
+    fi
+
+    local start_time=$(jq -r '.startTime' "$VISION_RUN_DIR/manifest.json" 2>/dev/null)
+
+    # Calculate duration in seconds (macOS compatible)
+    local start_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$start_time" "+%s" 2>/dev/null)
+    if [ -z "$start_epoch" ] || [ "$start_epoch" = "0" ]; then
+        # Fallback: use file modification time
+        start_epoch=$(stat -f%m "$VISION_RUN_DIR/manifest.json" 2>/dev/null || echo 0)
+    fi
+    local now_epoch=$(date "+%s")
+    local duration_sec=$((now_epoch - start_epoch))
+    [ "$duration_sec" -lt 0 ] && duration_sec=0
+
+    jq --arg duration "$duration_sec" --arg runId "$VISION_RUN_ID" '
+        # Token & cost calculation
+        (.bytes.light * 0.25) as $lightTokens |
+        (.bytes.jpeg * 0.25) as $jpegTokens |
+        (.bytes.pdf * 0.25) as $pdfTokens |
+        ($lightTokens + $jpegTokens + $pdfTokens) as $totalTokens |
+        ($totalTokens / 1000000 * 3) as $cost |
+
+        # Totals
+        (.captures.light + .captures.jpeg + .captures.pdf) as $totalCaptures |
+        (.actions.clicks + .actions.types + .actions.navigations + .actions.scrolls) as $totalActions |
+
+        # Rate calculation (per hour)
+        (($duration | tonumber) / 3600) as $hours |
+        (if $hours > 0 then ($totalCaptures / $hours) else 0 end) as $capturesPerHour |
+        (if $hours > 0 then ($cost / $hours) else 0 end) as $costPerHour |
+
+        {
+            runId: $runId,
+            duration: {
+                seconds: ($duration | tonumber),
+                formatted: (
+                    (($duration | tonumber) / 3600 | floor | tostring) + "h " +
+                    ((($duration | tonumber) % 3600 / 60) | floor | tostring) + "m"
+                )
+            },
+            captures: {
+                total: $totalCaptures,
+                byMode: .captures,
+                perHour: ($capturesPerHour | floor)
+            },
+            bytes: {
+                total: .bytes.total,
+                formatted: (
+                    if .bytes.total > 1048576 then
+                        ((.bytes.total / 1048576 * 10 | floor) / 10 | tostring) + "MB"
+                    else
+                        ((.bytes.total / 1024 * 10 | floor) / 10 | tostring) + "KB"
+                    end
+                )
+            },
+            tokens: ($totalTokens | floor),
+            cost: {
+                current: ("$" + (($cost * 100 | floor | . / 100) | tostring)),
+                perHour: ("$" + (($costPerHour * 100 | floor | . / 100) | tostring)),
+                projected6h: ("$" + (($costPerHour * 6 * 100 | floor | . / 100) | tostring))
+            },
+            actions: {
+                total: $totalActions,
+                breakdown: .actions
+            },
+            selectors: .selectors,
+            errors: .errors
+        }
+    ' "$METRICS_FILE"
 }
 
 # ============================================================================
@@ -82,12 +309,20 @@ vision_goto() {
     local timeout="${2:-10}"
     local selector="${3:-}"
 
+    _metrics_action "navigations"
     curl -s -X POST "$COMMAND_SERVER/command" \
         -H "Content-Type: application/json" \
         -d "{\"id\":\"nav\",\"method\":\"goto\",\"params\":{\"url\":\"$url\"}}" | jq -c '{success}'
 
     # Wait for page ready instead of fixed sleep
-    vision_wait_ready "$timeout" 500 "$selector"
+    local ready_result=$(vision_wait_ready "$timeout" 500 "$selector")
+
+    # Log wait timing
+    local waited_ms=$(echo "$ready_result" | jq -r '.waitedMs // 0')
+    local checks=$(echo "$ready_result" | jq -r '.checks // 0')
+    _metrics_wait "$waited_ms" "$checks"
+
+    echo "$ready_result"
 }
 
 # Get current URL
@@ -120,9 +355,16 @@ vision_title() {
 # Use when Claude just needs to know what's clickable, not see it
 # Usage: vision_capture_light
 vision_capture_light() {
-    curl -s -X POST "$COMMAND_SERVER/command" \
+    local response=$(curl -s -X POST "$COMMAND_SERVER/command" \
         -H "Content-Type: application/json" \
-        -d '{"id":"light","method":"captureLight","params":{}}' | jq -c '.result'
+        -d '{"id":"light","method":"captureLight","params":{}}')
+
+    # Get byte count from raw response (more reliable than jq with control chars)
+    local bytes=${#response}
+    _metrics_capture "light" "$bytes"
+
+    # Output the result portion
+    echo "$response" | jq -c '.result' 2>/dev/null || echo "$response"
 }
 
 # JPEG capture - smaller than PDF, still visual
@@ -136,6 +378,10 @@ vision_capture_jpeg() {
     local response=$(curl -s -X POST "$COMMAND_SERVER/command" \
         -H "Content-Type: application/json" \
         -d "{\"id\":\"jpeg\",\"method\":\"captureJPEG\",\"params\":{\"quality\":$quality,\"fullPage\":$full_page}}")
+
+    # Get actual image size from response
+    local size=$(echo "$response" | jq -r '.result.size // 0')
+    _metrics_capture "jpeg" "$size"
 
     # Return metadata (without the base64 image data for console output)
     echo "$response" | jq -c '{url:.result.url,title:.result.title,size:.result.size,width:.result.width,height:.result.height}'
@@ -171,6 +417,12 @@ vision_capture() {
     local pdf_path=$(echo "$response" | jq -r '.result.savedTo')
     local url=$(echo "$response" | jq -r '.result.url')
     local title=$(echo "$response" | jq -r '.result.title')
+
+    # Get PDF file size for metrics
+    if [ -f "$pdf_path" ]; then
+        local size=$(stat -f%z "$pdf_path" 2>/dev/null || echo 0)
+        _metrics_capture "pdf" "$size"
+    fi
 
     # Output for Claude to see
     echo "{\"step\":$VISION_STEP,\"name\":\"$step_name\",\"pdf\":\"$pdf_path\",\"url\":\"$url\",\"title\":\"$title\"}"
@@ -209,6 +461,7 @@ vision_capture_smart() {
 # Usage: vision_click_text "Add to cart"
 vision_click_text() {
     local text="$1"
+    _metrics_action "clicks"
     cat > /tmp/vision-click.json << EOF
 {"id":"click","method":"evaluate","params":{"script":"(function(){const t='$text'.toLowerCase();const els=[...document.querySelectorAll('button,a,input[type=submit],input[type=button],[role=button]')].filter(e=>(e.textContent||'').toLowerCase().includes(t)||(e.value||'').toLowerCase().includes(t)||(e.title||'').toLowerCase().includes(t)||(e.getAttribute('aria-label')||'').toLowerCase().includes(t)||(e.name||'').toLowerCase().includes(t));if(els[0]){els[0].scrollIntoView({block:'center'});els[0].click();return {success:true,element:els[0].tagName,text:els[0].textContent?.substring(0,50)||els[0].title?.substring(0,50)||''}}return {success:false,error:'not found'}})()"}}
 EOF
@@ -221,6 +474,7 @@ EOF
 # Usage: vision_click "#add-to-cart-button"
 vision_click() {
     local selector="$1"
+    _metrics_action "clicks"
     curl -s -X POST "$COMMAND_SERVER/command" \
         -H "Content-Type: application/json" \
         -d "{\"id\":\"click\",\"method\":\"click\",\"params\":{\"selector\":\"$selector\"}}" | jq -c '{success}'
@@ -230,6 +484,7 @@ vision_click() {
 # Usage: vision_click_link "View cart"
 vision_click_link() {
     local text="$1"
+    _metrics_action "clicks"
     cat > /tmp/vision-click.json << EOF
 {"id":"click","method":"evaluate","params":{"script":"(function(){const t='$text'.toLowerCase();const els=[...document.querySelectorAll('a')].filter(e=>(e.textContent||'').toLowerCase().includes(t));if(els[0]){els[0].scrollIntoView({block:'center'});els[0].click();return {success:true,href:els[0].href,text:els[0].textContent?.substring(0,50)}}return {success:false,error:'link not found'}})()"}}
 EOF
@@ -243,6 +498,7 @@ EOF
 vision_type() {
     local text="$1"
     local selector="${2:-}"
+    _metrics_action "types"
 
     if [ -n "$selector" ]; then
         # Focus the element first
@@ -282,6 +538,7 @@ vision_scroll() {
     local amount="${2:-300}"
     local delta=$amount
     [ "$direction" = "up" ] && delta=-$amount
+    _metrics_action "scrolls"
 
     curl -s -X POST "$COMMAND_SERVER/command" \
         -H "Content-Type: application/json" \
@@ -614,6 +871,22 @@ SELECTOR CACHE (per-domain learning):
   selector_stats                  Get cache statistics
   selector_export                 Export all cache data as JSON
   selector_clear "domain"         Clear cache for domain
+
+METRICS & COST TRACKING:
+  vision_metrics                  Get raw metrics JSON
+  vision_cost                     Get token/cost estimate
+  vision_summary                  Full summary with projections
+
+  Metrics tracked per run:
+    - Captures by mode (light/jpeg/pdf)
+    - Bytes read (for token estimation)
+    - Actions (clicks, types, scrolls, navigations)
+    - Selector cache hits/misses
+    - Wait timing
+
+  Cost estimation:
+    - ~0.25 tokens per byte
+    - $3 per 1M tokens (Sonnet input)
 
 EXAMPLE:
   source watchdog/vision-loop.sh
