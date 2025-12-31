@@ -1,0 +1,186 @@
+#!/bin/bash
+# ATL Cart Flow - Add item to cart on any merchant
+# Usage: ./bin/cart <merchant> [search_term]
+# Returns JSON with success/failure info + PDF of final state
+
+API="http://localhost:9222/command"
+MERCHANT="${1:-bestbuy}"
+SEARCH="${2:-wireless earbuds}"
+SEARCH_ENCODED=$(echo "$SEARCH" | sed 's/ /+/g')
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+OUTPUT_DIR="Screenshots"
+PDF_FILE="$OUTPUT_DIR/${MERCHANT}-cart-${TIMESTAMP}.pdf"
+
+# Result tracking
+RESULT_SUCCESS=false
+RESULT_STEP=""
+RESULT_ERROR=""
+RESULT_CART_TOTAL=""
+RESULT_ITEMS=0
+RESULT_WARNINGS=""
+
+# Merchant configs
+case "$MERCHANT" in
+  amazon)
+    SEARCH_URL="https://www.amazon.com/s?k=$SEARCH_ENCODED"
+    CART_URL="https://www.amazon.com/gp/cart/view.html"
+    ;;
+  bestbuy)
+    SEARCH_URL="https://www.bestbuy.com/site/searchpage.jsp?st=$SEARCH_ENCODED"
+    CART_URL="https://www.bestbuy.com/cart"
+    ;;
+  ebay)
+    SEARCH_URL="https://www.ebay.com/sch/i.html?_nkw=$SEARCH_ENCODED&LH_BIN=1"
+    CART_URL="https://cart.ebay.com"
+    ;;
+  target)
+    SEARCH_URL="https://www.target.com/s?searchTerm=$SEARCH_ENCODED"
+    CART_URL="https://www.target.com/cart"
+    ;;
+  walmart)
+    SEARCH_URL="https://www.walmart.com/search?q=$SEARCH_ENCODED"
+    CART_URL="https://www.walmart.com/cart"
+    ;;
+  homedepot)
+    SEARCH_URL="https://www.homedepot.com/s/$SEARCH_ENCODED"
+    CART_URL="https://www.homedepot.com/mycart/home"
+    ;;
+  *)
+    echo "{\"success\":false,\"error\":\"Unknown merchant: $MERCHANT\",\"supported\":[\"amazon\",\"bestbuy\",\"ebay\",\"target\",\"walmart\",\"homedepot\"]}"
+    exit 1
+    ;;
+esac
+
+cmd() {
+  curl -s -X POST "$API" -H "Content-Type: application/json" -d "$1"
+}
+
+capture_and_exit() {
+  # Always capture final state
+  cmd '{"id":"final","method":"screenshot","params":{"fullPage":true}}' | jq -r '.result.data // empty' | base64 -d > "$PDF_FILE" 2>/dev/null
+
+  # Build warnings array
+  if [ -n "$RESULT_WARNINGS" ]; then
+    WARNINGS_JSON="[\"$RESULT_WARNINGS\"]"
+  else
+    WARNINGS_JSON="[]"
+  fi
+
+  # Output JSON result
+  cat <<EOF
+{
+  "success": $RESULT_SUCCESS,
+  "merchant": "$MERCHANT",
+  "search": "$SEARCH",
+  "step": "$RESULT_STEP",
+  "error": "$RESULT_ERROR",
+  "warnings": $WARNINGS_JSON,
+  "cart": {
+    "items": $RESULT_ITEMS,
+    "total": "$RESULT_CART_TOTAL"
+  },
+  "pdf": "$PDF_FILE"
+}
+EOF
+  exit 0
+}
+
+# Step 1: Navigate to search
+RESULT_STEP="goto_search"
+RESPONSE=$(cmd "{\"id\":\"1\",\"method\":\"goto\",\"params\":{\"url\":\"$SEARCH_URL\"}}")
+if [ "$(echo "$RESPONSE" | jq -r '.success')" != "true" ]; then
+  RESULT_ERROR="Failed to navigate to search page"
+  capture_and_exit
+fi
+sleep 3
+
+# Step 2: Mark all elements
+RESULT_STEP="mark_search"
+MARKS=$(cmd '{"id":"2","method":"markAll"}')
+COUNT=$(echo "$MARKS" | jq -r '.result.count // 0')
+if [ "$COUNT" -eq 0 ]; then
+  RESULT_ERROR="No interactive elements found on search page"
+  capture_and_exit
+fi
+
+# Step 3: Find Add to Cart button
+RESULT_STEP="find_add_to_cart"
+ADD_LABEL=$(echo "$MARKS" | jq -r '[.result.elements[] | select(.text | test("add to cart|add to bag"; "i"))] | .[0].label // empty')
+
+# If no direct add to cart, try clicking a product first
+if [ -z "$ADD_LABEL" ]; then
+  RESULT_STEP="click_product"
+  PRODUCT_LABEL=$(echo "$MARKS" | jq -r '[.result.elements[] | select(.href != null and (.href | test("/dp/|/itm/|/ip/|/p/|/product/"; "i")))] | .[0].label // empty')
+
+  if [ -z "$PRODUCT_LABEL" ]; then
+    RESULT_ERROR="No product links found on search page"
+    capture_and_exit
+  fi
+
+  cmd "{\"id\":\"3a\",\"method\":\"clickMark\",\"params\":{\"label\":$PRODUCT_LABEL}}" > /dev/null
+  sleep 3
+
+  # Re-mark on product page
+  RESULT_STEP="mark_product"
+  MARKS=$(cmd '{"id":"3b","method":"markAll"}')
+
+  RESULT_STEP="find_add_to_cart"
+  ADD_LABEL=$(echo "$MARKS" | jq -r '[.result.elements[] | select(.text | test("add to cart|add to bag|buy now"; "i"))] | .[0].label // empty')
+
+  if [ -z "$ADD_LABEL" ]; then
+    RESULT_ERROR="No Add to Cart button found on product page"
+    capture_and_exit
+  fi
+fi
+
+# Step 4: Click Add to Cart
+RESULT_STEP="click_add_to_cart"
+RESPONSE=$(cmd "{\"id\":\"4\",\"method\":\"clickMark\",\"params\":{\"label\":$ADD_LABEL}}")
+if [ "$(echo "$RESPONSE" | jq -r '.success')" != "true" ]; then
+  RESULT_ERROR="Failed to click Add to Cart (label $ADD_LABEL)"
+  capture_and_exit
+fi
+sleep 2
+
+# Step 5: Go to cart
+RESULT_STEP="goto_cart"
+RESPONSE=$(cmd "{\"id\":\"5\",\"method\":\"goto\",\"params\":{\"url\":\"$CART_URL\"}}")
+if [ "$(echo "$RESPONSE" | jq -r '.success')" != "true" ]; then
+  RESULT_ERROR="Failed to navigate to cart"
+  capture_and_exit
+fi
+sleep 3
+
+# Step 6: Verify cart has items
+RESULT_STEP="verify_cart"
+MARKS=$(cmd '{"id":"6","method":"markAll"}')
+
+# Get all element texts for searching
+ALL_TEXT=$(echo "$MARKS" | jq -r '[.result.elements[].text] | join(" ")')
+
+# Look for checkout/cart indicators
+CHECKOUT=$(echo "$MARKS" | jq -r '[.result.elements[] | select(.text | test("checkout|proceed|subtotal|cart \\("; "i"))] | .[0].text // empty')
+
+if [ -n "$CHECKOUT" ]; then
+  RESULT_SUCCESS=true
+  RESULT_ITEMS=1
+
+  # Try multiple patterns to find total
+  RESULT_CART_TOTAL=$(echo "$ALL_TEXT" | grep -oE '(total|subtotal)[^$]*\$[0-9]+\.[0-9]+' | grep -oE '\$[0-9]+\.[0-9]+' | tail -1)
+
+  # Fallback: just find any dollar amount near "total"
+  if [ -z "$RESULT_CART_TOTAL" ]; then
+    RESULT_CART_TOTAL=$(echo "$ALL_TEXT" | grep -oE '\$[0-9]+\.[0-9]+' | tail -1)
+  fi
+
+  # Warn if still no total
+  if [ -z "$RESULT_CART_TOTAL" ]; then
+    RESULT_WARNINGS="total not extracted"
+  fi
+else
+  RESULT_ERROR="Cart appears empty - no checkout button found"
+fi
+
+# Done
+RESULT_STEP="complete"
+capture_and_exit

@@ -1,0 +1,246 @@
+openapi: 3.1.0
+info:
+  title: ATL - iOS Browser Automation API
+  description: |
+    Headless iOS Safari automation via HTTP. Captures full-page PDFs with searchable vector text.
+
+    ## Quick Start
+    ```bash
+    ./bin/atl start
+    curl http://localhost:9222/ping
+    ```
+  version: 1.0.0
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:9222
+    description: Local iOS Simulator
+
+paths:
+  /ping:
+    get:
+      summary: Health check
+      operationId: ping
+      responses:
+        '200':
+          description: Server is running
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+              example:
+                status: ok
+
+  /command:
+    post:
+      summary: Execute browser command
+      operationId: executeCommand
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Command'
+      responses:
+        '200':
+          description: Command executed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Response'
+
+components:
+  schemas:
+    Command:
+      type: object
+      required: [id, method]
+      properties:
+        id:
+          type: string
+          description: Unique request identifier
+        method:
+          type: string
+          enum:
+            - goto
+            - reload
+            - back
+            - forward
+            - click
+            - fill
+            - type
+            - press
+            - hover
+            - screenshot
+            - captureLight
+            - querySelector
+            - querySelectorAll
+            - waitForSelector
+        params:
+          type: object
+          description: Method-specific parameters
+
+    Response:
+      type: object
+      properties:
+        id:
+          type: string
+        success:
+          type: boolean
+        result:
+          type: object
+        error:
+          type: string
+
+    # Navigation
+    GotoParams:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri
+          example: https://amazon.com
+
+    # Interaction
+    ClickParams:
+      type: object
+      required: [selector]
+      properties:
+        selector:
+          type: string
+          description: CSS selector
+          example: "#add-to-cart"
+
+    FillParams:
+      type: object
+      required: [selector, value]
+      properties:
+        selector:
+          type: string
+          example: "input[name=q]"
+        value:
+          type: string
+          example: "airpods pro"
+
+    TypeParams:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+
+    PressParams:
+      type: object
+      required: [key]
+      properties:
+        key:
+          type: string
+          enum: [Enter, Tab, Escape, Backspace, ArrowUp, ArrowDown, ArrowLeft, ArrowRight]
+
+    # Capture
+    ScreenshotParams:
+      type: object
+      properties:
+        fullPage:
+          type: boolean
+          default: false
+          description: |
+            - false: PNG of viewport
+            - true: PDF of entire scrollable page (vector text, searchable)
+
+    ScreenshotResult:
+      type: object
+      properties:
+        data:
+          type: string
+          format: byte
+          description: Base64-encoded PNG or PDF
+        mimeType:
+          type: string
+          enum: [image/png, application/pdf]
+
+    LightCaptureResult:
+      type: object
+      description: Structured page data (~99% smaller than PDF)
+      properties:
+        title:
+          type: string
+        url:
+          type: string
+          format: uri
+        timestamp:
+          type: string
+          format: date-time
+        text:
+          type: string
+          description: All visible text content
+        interactives:
+          type: array
+          items:
+            $ref: '#/components/schemas/InteractiveElement'
+
+    InteractiveElement:
+      type: object
+      properties:
+        tag:
+          type: string
+          example: A
+        id:
+          type: string
+        text:
+          type: string
+        href:
+          type: string
+        ariaLabel:
+          type: string
+
+    # Query
+    QuerySelectorParams:
+      type: object
+      required: [selector]
+      properties:
+        selector:
+          type: string
+
+    Element:
+      type: object
+      properties:
+        tag:
+          type: string
+        id:
+          type: string
+        className:
+          type: string
+        text:
+          type: string
+        href:
+          type: string
+        value:
+          type: string
+        rect:
+          type: object
+          properties:
+            x:
+              type: number
+            y:
+              type: number
+            width:
+              type: number
+            height:
+              type: number
+
+tags:
+  - name: Navigation
+    description: Page navigation commands
+  - name: Interaction
+    description: Click, type, fill forms
+  - name: Capture
+    description: Screenshots, PDFs, structured data
+  - name: Query
+    description: Find elements on page

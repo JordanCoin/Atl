@@ -73,3 +73,10 @@ screenshots/
 # Debug logs
 firebase-debug.log
 *.log
+
+# Internal/experiments (not open source)
+experiments/
+
+# Local state
+.codemap/
+.claude/
