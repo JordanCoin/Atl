@@ -5,7 +5,7 @@ Fast browser automation via iOS Simulator. Complete tasks in minimal API calls.
 ## Quick Start
 
 ```bash
-git clone https://github.com/yourusername/atl.git
+git clone https://github.com/JordanCoin/Atl.git
 cd atl
 ./bin/atl start
 ```
@@ -177,6 +177,15 @@ On failure, you always get:
 ```
 
 Look at the PDF to see what went wrong.
+
+## Security
+
+ATL runs an **unauthenticated HTTP server** on port 9222. This is designed for local development only.
+
+- The server binds to `127.0.0.1` (localhost) and rejects external connections
+- Never expose port 9222 to the network or internet
+- Never run ATL on a shared machine with untrusted users
+- The server has full control over the browser - treat it like a debug port
 
 ## Requirements
 

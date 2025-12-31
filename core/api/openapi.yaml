@@ -2,13 +2,21 @@ openapi: 3.1.0
 info:
   title: ATL - iOS Browser Automation API
   description: |
-    Headless iOS Safari automation via HTTP. Captures full-page PDFs with searchable vector text.
+    iOS Safari automation via HTTP. Simple pattern: goto → markAll → clickMark.
 
     ## Quick Start
     ```bash
     ./bin/atl start
     curl http://localhost:9222/ping
     ```
+
+    ## Security Warning
+
+    This API runs an **unauthenticated HTTP server** for local development only.
+
+    - Server binds to 127.0.0.1 (localhost) and rejects external connections
+    - Never expose port 9222 to the network or internet
+    - Treat this like a browser debug port - it has full control over the WebView
   version: 1.0.0
   license:
     name: MIT
@@ -16,7 +24,7 @@ info:
 
 servers:
   - url: http://localhost:9222
-    description: Local iOS Simulator
+    description: Local iOS Simulator (localhost only)
 
 paths:
   /ping:
@@ -67,17 +75,27 @@ components:
         method:
           type: string
           enum:
+            # Navigation
             - goto
             - reload
             - back
             - forward
+            # Set-of-Mark (main feature)
+            - markAll
+            - markElements
+            - clickMark
+            - unmarkElements
+            # Interaction
             - click
             - fill
             - type
             - press
             - hover
+            # Capture
             - screenshot
             - captureLight
+            - captureJPEG
+            # Query
             - querySelector
             - querySelectorAll
             - waitForSelector

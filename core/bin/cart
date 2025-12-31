@@ -6,7 +6,8 @@
 API="http://localhost:9222/command"
 MERCHANT="${1:-bestbuy}"
 SEARCH="${2:-wireless earbuds}"
-SEARCH_ENCODED=$(echo "$SEARCH" | sed 's/ /+/g')
+# Proper URL encoding using Python (available on macOS)
+SEARCH_ENCODED=$(python3 -c "import urllib.parse; print(urllib.parse.quote_plus('$SEARCH'))")
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 OUTPUT_DIR="Screenshots"
 PDF_FILE="$OUTPUT_DIR/${MERCHANT}-cart-${TIMESTAMP}.pdf"

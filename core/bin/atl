@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ATL - Accessibility-based browser automation for iOS WebKit
-# https://github.com/yourusername/atl
+# https://github.com/JordanCoin/Atl
 
 set -e
 
@@ -157,8 +157,7 @@ launch_app() {
     local udid="$1"
 
     log "Launching AtlBrowser..."
-    xcrun simctl launch "$udid" com.example.AtlBrowser 2>/dev/null || \
-    xcrun simctl launch "$udid" com.jordanbietz.AtlBrowser 2>/dev/null || \
+    xcrun simctl launch "$udid" com.atl.browser 2>/dev/null || \
     xcrun simctl launch "$udid" $(get_bundle_id) 2>/dev/null
 
     success "AtlBrowser launched"
@@ -265,8 +264,7 @@ cmd_stop() {
     # Find and terminate the app
     local udid=$(find_simulator "$ATL_SIMULATOR")
     if [ -n "$udid" ]; then
-        xcrun simctl terminate "$udid" com.example.AtlBrowser 2>/dev/null || true
-        xcrun simctl terminate "$udid" com.jordanbietz.AtlBrowser 2>/dev/null || true
+        xcrun simctl terminate "$udid" com.atl.browser 2>/dev/null || true
     fi
 
     success "AtlBrowser stopped"

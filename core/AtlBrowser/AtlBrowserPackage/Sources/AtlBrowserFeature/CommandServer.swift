@@ -15,10 +15,17 @@ final class CommandServer {
 
     func start() {
         do {
+            guard let nwPort = NWEndpoint.Port(rawValue: port) else {
+                print("[CommandServer] Invalid port: \(port)")
+                return
+            }
+
             let parameters = NWParameters.tcp
             parameters.allowLocalEndpointReuse = true
+            // Restrict to localhost only for security
+            parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: nwPort)
 
-            listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
+            listener = try NWListener(using: parameters, on: nwPort)
 
             let serverPort = port
             listener?.stateUpdateHandler = { state in
@@ -119,6 +126,15 @@ final class CommandServer {
         if path == "/ping" && method == "GET" {
             handlePing(connection)
         } else if path == "/command" && method == "POST" {
+            // Validate Content-Type for POST requests
+            let hasJsonContentType = lines.contains { line in
+                line.lowercased().hasPrefix("content-type:") &&
+                line.lowercased().contains("application/json")
+            }
+            if !hasJsonContentType && body != nil {
+                sendErrorResponse(connection, message: "Content-Type must be application/json")
+                return
+            }
             handleCommand(body, connection: connection)
         } else {
             sendErrorResponse(connection, message: "Not found")
