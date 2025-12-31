@@ -70,12 +70,23 @@ class BrowserController: ObservableObject {
         commandServer.start()
     }
 
-    // MARK: - ASWebAuthenticationSession for OAuth
+    // MARK: - OAuth Support (Experimental - Not Working)
+    // GitHub Issue: https://github.com/JordanCoin/Atl/issues/1
+    //
+    // Attempted to support "Sign in with Google/Apple" flows but these don't work yet.
+    // Problems:
+    // - Google detects WKWebView and blocks sign-in
+    // - ASWebAuthenticationSession doesn't share cookies back to WKWebView properly
+    // - Popup-based OAuth (window.open) loses the opener reference
+    //
+    // Current workaround: Use email/password login instead of SSO
+    // Contributions welcome!
 
     private var authSession: ASWebAuthenticationSession?
     private var authPresentationContext: AuthPresentationContext?
 
     /// Start ASWebAuthenticationSession for OAuth flows (Google, Apple, etc.)
+    /// NOTE: This is experimental and doesn't work reliably yet. See GitHub issue #1.
     func startAuthSession(url: URL) {
         // Determine the callback URL scheme based on the OAuth provider
         // Twitter/X OAuth flows typically redirect back to x.com or twitter.com
