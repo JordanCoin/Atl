@@ -1,0 +1,29 @@
+{
+  "" : {
+    "diagnostics" : "/Users/jordanjackson/Atl/core/AtlBrowser/.derivedData/Build/Intermediates.noindex/AtlBrowser.build/Debug-iphonesimulator/AtlBrowser.build/Objects-normal/x86_64/AtlBrowser-primary.dia",
+    "emit-module-dependencies" : "/Users/jordanjackson/Atl/core/AtlBrowser/.derivedData/Build/Intermediates.noindex/AtlBrowser.build/Debug-iphonesimulator/AtlBrowser.build/Objects-normal/x86_64/AtlBrowser-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/jordanjackson/Atl/core/AtlBrowser/.derivedData/Build/Intermediates.noindex/AtlBrowser.build/Debug-iphonesimulator/AtlBrowser.build/Objects-normal/x86_64/AtlBrowser-primary-emit-module.dia",
+    "pch" : "/Users/jordanjackson/Atl/core/AtlBrowser/.derivedData/Build/Intermediates.noindex/AtlBrowser.build/Debug-iphonesimulator/AtlBrowser.build/Objects-normal/x86_64/AtlBrowser-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/jordanjackson/Atl/core/AtlBrowser/.derivedData/Build/Intermediates.noindex/AtlBrowser.build/Debug-iphonesimulator/AtlBrowser.build/Objects-normal/x86_64/AtlBrowser-primary.swiftdeps"
+  },
+  "/Users/jordanjackson/Atl/core/AtlBrowser/.derivedData/Build/Intermediates.noindex/AtlBrowser.build/Debug-iphonesimulator/AtlBrowser.build/DerivedSources/GeneratedAssetSymbols.swift" : {
+    "const-values" : "/Users/jordanjackson/Atl/core/AtlBrowser/.derivedData/Build/Intermediates.noindex/AtlBrowser.build/Debug-iphonesimulator/AtlBrowser.build/Objects-normal/x86_64/GeneratedAssetSymbols.swiftconstvalues",
+    "dependencies" : "/Users/jordanjackson/Atl/core/AtlBrowser/.derivedData/Build/Intermediates.noindex/AtlBrowser.build/Debug-iphonesimulator/AtlBrowser.build/Objects-normal/x86_64/GeneratedAssetSymbols.d",
+    "diagnostics" : "/Users/jordanjackson/Atl/core/AtlBrowser/.derivedData/Build/Intermediates.noindex/AtlBrowser.build/Debug-iphonesimulator/AtlBrowser.build/Objects-normal/x86_64/GeneratedAssetSymbols.dia",
+    "index-unit-output-path" : "/AtlBrowser.build/Debug-iphonesimulator/AtlBrowser.build/Objects-normal/x86_64/GeneratedAssetSymbols.o",
+    "llvm-bc" : "/Users/jordanjackson/Atl/core/AtlBrowser/.derivedData/Build/Intermediates.noindex/AtlBrowser.build/Debug-iphonesimulator/AtlBrowser.build/Objects-normal/x86_64/GeneratedAssetSymbols.bc",
+    "object" : "/Users/jordanjackson/Atl/core/AtlBrowser/.derivedData/Build/Intermediates.noindex/AtlBrowser.build/Debug-iphonesimulator/AtlBrowser.build/Objects-normal/x86_64/GeneratedAssetSymbols.o",
+    "swift-dependencies" : "/Users/jordanjackson/Atl/core/AtlBrowser/.derivedData/Build/Intermediates.noindex/AtlBrowser.build/Debug-iphonesimulator/AtlBrowser.build/Objects-normal/x86_64/GeneratedAssetSymbols.swiftdeps",
+    "swiftmodule" : "/Users/jordanjackson/Atl/core/AtlBrowser/.derivedData/Build/Intermediates.noindex/AtlBrowser.build/Debug-iphonesimulator/AtlBrowser.build/Objects-normal/x86_64/GeneratedAssetSymbols~partial.swiftmodule"
+  },
+  "/Users/jordanjackson/Atl/core/AtlBrowser/AtlBrowser/AtlBrowserApp.swift" : {
+    "const-values" : "/Users/jordanjackson/Atl/core/AtlBrowser/.derivedData/Build/Intermediates.noindex/AtlBrowser.build/Debug-iphonesimulator/AtlBrowser.build/Objects-normal/x86_64/AtlBrowserApp.swiftconstvalues",
+    "dependencies" : "/Users/jordanjackson/Atl/core/AtlBrowser/.derivedData/Build/Intermediates.noindex/AtlBrowser.build/Debug-iphonesimulator/AtlBrowser.build/Objects-normal/x86_64/AtlBrowserApp.d",
+    "diagnostics" : "/Users/jordanjackson/Atl/core/AtlBrowser/.derivedData/Build/Intermediates.noindex/AtlBrowser.build/Debug-iphonesimulator/AtlBrowser.build/Objects-normal/x86_64/AtlBrowserApp.dia",
+    "index-unit-output-path" : "/AtlBrowser.build/Debug-iphonesimulator/AtlBrowser.build/Objects-normal/x86_64/AtlBrowserApp.o",
+    "llvm-bc" : "/Users/jordanjackson/Atl/core/AtlBrowser/.derivedData/Build/Intermediates.noindex/AtlBrowser.build/Debug-iphonesimulator/AtlBrowser.build/Objects-normal/x86_64/AtlBrowserApp.bc",
+    "object" : "/Users/jordanjackson/Atl/core/AtlBrowser/.derivedData/Build/Intermediates.noindex/AtlBrowser.build/Debug-iphonesimulator/AtlBrowser.build/Objects-normal/x86_64/AtlBrowserApp.o",
+    "swift-dependencies" : "/Users/jordanjackson/Atl/core/AtlBrowser/.derivedData/Build/Intermediates.noindex/AtlBrowser.build/Debug-iphonesimulator/AtlBrowser.build/Objects-normal/x86_64/AtlBrowserApp.swiftdeps",
+    "swiftmodule" : "/Users/jordanjackson/Atl/core/AtlBrowser/.derivedData/Build/Intermediates.noindex/AtlBrowser.build/Debug-iphonesimulator/AtlBrowser.build/Objects-normal/x86_64/AtlBrowserApp~partial.swiftmodule"
+  }
+}

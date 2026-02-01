@@ -20,11 +20,12 @@ final class CommandServer {
                 return
             }
 
+            // iOS 26 Simulator fix: Use NWListener without requiredLocalEndpoint
+            // The simulator shares host network, but NWListener binding is tricky
             let parameters = NWParameters.tcp
             parameters.allowLocalEndpointReuse = true
-            // Restrict to localhost only for security
-            parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: nwPort)
-
+            
+            // Try using service type instead of explicit endpoint
             listener = try NWListener(using: parameters, on: nwPort)
 
             let serverPort = port
