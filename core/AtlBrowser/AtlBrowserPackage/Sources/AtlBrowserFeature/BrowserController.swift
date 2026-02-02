@@ -54,7 +54,8 @@ class BrowserController: ObservableObject {
         webView = WKWebView(frame: .zero, configuration: config)
         webView.allowsBackForwardNavigationGestures = true
 
-        // Set Safari user agent to bypass WebView detection (e.g., Twitter/X)
+        // Default Safari-like user agent to bypass WebView detection (e.g., Twitter/X)
+        // NOTE: This is now configurable at runtime via the CommandServer (setUserAgent).
         webView.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/605.1.15"
 
         navigationDelegate = WebViewNavigationDelegate(controller: self)
@@ -697,6 +698,29 @@ class BrowserController: ObservableObject {
                     continuation.resume(returning: Data())
                 }
             }
+        }
+    }
+
+    // MARK: - Browser Profile (User Agent / Content Mode)
+
+    enum ContentMode: String {
+        case mobile
+        case desktop
+    }
+
+    func getUserAgent() -> String {
+        webView.customUserAgent ?? ""
+    }
+
+    func setUserAgent(_ userAgent: String?) {
+        // Setting to nil lets WebKit choose default, but we usually prefer an explicit Safari-like UA.
+        webView.customUserAgent = userAgent
+    }
+
+    func setContentMode(_ mode: ContentMode) {
+        // preferredContentMode influences how websites are rendered (similar to "Request Desktop Website").
+        if #available(iOS 13.0, *) {
+            webView.configuration.defaultWebpagePreferences.preferredContentMode = (mode == .desktop) ? .desktop : .mobile
         }
     }
 

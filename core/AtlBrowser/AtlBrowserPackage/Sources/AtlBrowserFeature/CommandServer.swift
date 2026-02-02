@@ -290,6 +290,23 @@ final class CommandServer {
                     "checks": readyResult.checks
                 ]
 
+            // Browser Profile
+            case "getUserAgent":
+                result = ["userAgent": controller.getUserAgent()]
+
+            case "setUserAgent":
+                // Pass { userAgent: "..." } to set; omit/empty to no-op; { userAgent: null } not representable in JSON dictionary parsing here.
+                if let ua = command.params?["userAgent"] as? String {
+                    controller.setUserAgent(ua)
+                }
+                result = ["ok": true]
+
+            case "setContentMode":
+                let modeString = (command.params?["mode"] as? String) ?? "mobile"
+                let mode: BrowserController.ContentMode = (modeString.lowercased() == "desktop") ? .desktop : .mobile
+                controller.setContentMode(mode)
+                result = ["ok": true, "mode": mode.rawValue]
+
             // JavaScript
             case "evaluate":
                 if let script = command.params?["script"] as? String {
@@ -316,6 +333,24 @@ final class CommandServer {
 
             // Vision Capture - full page PDF with metadata for vision-based automation
             case "captureForVision":
+                // Optional pre-capture settle (reuse existing readiness heuristic)
+                let preflight = command.params?["waitForReady"] as? Bool ?? false
+                if preflight {
+                    let timeout = command.params?["timeout"] as? TimeInterval ?? 20
+                    let stabilityMs = command.params?["stabilityMs"] as? Int ?? 1500
+                    let requiredSelector = command.params?["selector"] as? String
+                    _ = try await controller.waitForReady(
+                        timeout: timeout,
+                        stabilityMs: stabilityMs,
+                        requiredSelector: requiredSelector
+                    )
+
+                    let settleMs = command.params?["settleMs"] as? Int ?? 0
+                    if settleMs > 0 {
+                        try await Task.sleep(nanoseconds: UInt64(settleMs) * 1_000_000)
+                    }
+                }
+
                 let capture = try await controller.captureForVision()
 
                 // Optionally save to disk if savePath is provided
