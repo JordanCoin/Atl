@@ -1,4 +1,0 @@
-module AtlBrowserFeature {
-header "AtlBrowserFeature-Swift.h"
-export *
-}
