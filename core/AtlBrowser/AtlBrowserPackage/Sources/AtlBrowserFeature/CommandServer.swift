@@ -20,12 +20,20 @@ final class CommandServer {
                 return
             }
 
-            // iOS 26 Simulator fix: Use NWListener without requiredLocalEndpoint
-            // The simulator shares host network, but NWListener binding is tricky
             let parameters = NWParameters.tcp
             parameters.allowLocalEndpointReuse = true
-            
-            // Try using service type instead of explicit endpoint
+
+            // Security: this HTTP command server is unauthenticated, so we must avoid binding to
+            // all interfaces by default. Bind to loopback on real devices.
+            //
+            // Note: simulator networking can be quirky across iOS versions; if you *need* to reach
+            // the listener from the host machine, you may have to relax this (or add auth + firewall).
+#if !targetEnvironment(simulator)
+            if let loopback = IPv4Address("127.0.0.1") {
+                parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(loopback), port: nwPort)
+            }
+#endif
+
             listener = try NWListener(using: parameters, on: nwPort)
 
             let serverPort = port

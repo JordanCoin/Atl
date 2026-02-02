@@ -124,6 +124,8 @@ To include assets in your feature package:
 ### Command Server (HTTP API)
 AtlBrowser exposes a lightweight HTTP JSON command server on **port 9222** (see `CommandServer.swift`).
 
+**Security note:** This endpoint is **unauthenticated**. The app binds the listener to **loopback (127.0.0.1)** by default to avoid exposing browser control on the LAN. If you change binding behavior (especially on the iOS Simulator), make sure you understand the security implications and add auth / network restrictions as appropriate.
+
 Requests are sent as:
 ```json
 { "id": "1", "method": "goto", "params": { "url": "https://example.com" } }

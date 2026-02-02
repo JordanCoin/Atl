@@ -1,2 +1,2 @@
-core/AtlBrowser/.derivedData/
-core/AtlBrowser/.derivedData/
+# Xcode DerivedData (avoid committing build artifacts)
+AtlBrowser/.derivedData/
