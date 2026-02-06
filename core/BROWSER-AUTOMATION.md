@@ -1,5 +1,7 @@
 # Browser Automation for Claude
 
+> **For comprehensive docs** including touch gestures, vision-free workflows, and best practices, see the full **[OpenClaw skill](skill/SKILL.md)**.
+
 You have a browser at `http://localhost:9222`. Three commands do everything:
 
 ```

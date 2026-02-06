@@ -168,24 +168,36 @@ curl -X POST http://localhost:9222/command -d '{"method":"tap","params":{"x":214
 
 ## Using with AI Agents
 
-### OpenClaw Skill
+### OpenClaw Skill (Recommended)
 
-Install the ATL skill for [OpenClaw](https://github.com/openclaw/openclaw):
+Full skill with docs, helper scripts, and best practices: **[skill/](skill/)**
 
 ```bash
-# ATL skill is available in the OpenClaw skills marketplace
-openclaw skills install atl-browser
+# Install from this repo
+git clone https://github.com/JordanCoin/Atl.git
+openclaw skills install ./Atl/core/skill
+
+# Or if you already have the repo cloned
+openclaw skills install ./skill
 ```
 
-### Claude / Other Agents
+The skill includes:
+- Complete API documentation
+- Vision-free automation workflow (no GPT-4V costs!)
+- Escalation ladder (coordinates → vision → JS injection)
+- Bash helper functions (`atl_tap`, `atl_swipe`, `atl_mark`, etc.)
+- Real-world e-commerce checkout patterns
 
-See [BROWSER-AUTOMATION.md](BROWSER-AUTOMATION.md) for a drop-in guide teaching Claude to use this API autonomously.
+### Manual / Other AI Agents
 
-The pattern is simple enough that any AI agent can:
-1. Search `markAll` JSON to find elements by text
-2. Click by label number
-3. Repeat until task complete
-4. Send PDF back as proof
+The HTTP API is simple enough for any agent to use directly:
+
+1. **Mark elements:** `POST /command` with `{"method":"markAll"}` → get labeled elements
+2. **Find by text:** Search the JSON for buttons/links you want
+3. **Click by label:** `{"method":"clickMark","params":{"label":25}}`
+4. **Screenshot if stuck:** `{"method":"screenshot"}` → see what's blocking you
+
+See [BROWSER-AUTOMATION.md](BROWSER-AUTOMATION.md) for a quick-start guide, or dive into the full [skill documentation](skill/SKILL.md).
 
 ## CLI
 
