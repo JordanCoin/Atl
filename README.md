@@ -1,21 +1,25 @@
-# ATL
+# ATL — Agent Touch Layer
 
-iOS Browser Automation via Simulator. Fast, simple API.
+> The automation layer between AI agents and iOS
+
+Mobile browser automation via iOS Simulator. Built for AI agents — vision-free automation with numbered marks.
+
+![ATL marks on Target.com](core/docs/marks-example.png)
+*Numbered marks on interactive elements — no vision model needed*
 
 ## The Pattern
 
-Every page interaction is 3 calls:
-
 ```
-goto → markAll → clickMark
+markElements → getMarkInfo → tap x,y
 ```
 
-No CSS selectors. No XPath. The browser labels everything with numbers, you click by number.
+No CSS selectors. No vision API calls. The browser labels everything with numbers + coordinates.
 
 ## Quick Start
 
 ```bash
-cd core
+git clone https://github.com/JordanCoin/Atl.git
+cd Atl/core
 ./bin/atl start
 # API ready at http://localhost:9222
 ```
@@ -24,27 +28,48 @@ cd core
 
 ```bash
 # Navigate
-curl -X POST localhost:9222/command -d '{"method":"goto","params":{"url":"https://amazon.com"}}'
+curl -X POST localhost:9222/command -d '{"method":"goto","params":{"url":"https://target.com"}}'
 
-# Mark all interactive elements (returns JSON with labels)
+# Mark all interactive elements
 curl -X POST localhost:9222/command -d '{"method":"markAll"}'
 
-# Click element #25
-curl -X POST localhost:9222/command -d '{"method":"clickMark","params":{"label":25}}'
+# Get coordinates for element #26
+curl -X POST localhost:9222/command -d '{"method":"getMarkInfo","params":{"label":26}}'
+# → {"x":43, "y":539, "text":"Add to cart"}
+
+# Tap at exact coordinates
+curl -X POST localhost:9222/command -d '{"method":"tap","params":{"x":214,"y":561}}'
 ```
 
-**~360 automations/hour** with single simulator.
+## 🤖 AI Agent Integration
+
+### OpenClaw Skill (Recommended)
+
+```bash
+openclaw skills install ./core/skill
+```
+
+**[Full skill documentation →](core/skill/SKILL.md)** includes:
+- Vision-free automation workflow
+- Escalation ladder (coordinates → vision → JS)
+- Touch gestures (tap, swipe, pinch)
+- Helper bash functions
+- Best practices & troubleshooting
+
+### Manual Usage
+
+See [BROWSER-AUTOMATION.md](core/BROWSER-AUTOMATION.md) for quick-start guide.
 
 ## Documentation
 
-- [Full README](core/README.md) - API reference, CLI usage, examples
-- [OpenAPI Spec](core/api/openapi.yaml) - Machine-readable API definition
-- [Claude Integration](core/BROWSER-AUTOMATION.md) - Teaching AI agents to use the API
+- [Full README](core/README.md) - Complete API reference
+- [OpenClaw Skill](core/skill/) - AI agent integration
+- [OpenAPI Spec](core/api/openapi.yaml) - Machine-readable API
 
 ## Requirements
 
 - macOS with Xcode (for iOS Simulator)
-- No build step - pre-built app included
+- That's it!
 
 ## License
 
