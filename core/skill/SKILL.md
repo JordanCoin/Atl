@@ -497,6 +497,10 @@ atl_screenshot /tmp/current-state.png
 See `examples/` folder:
 - `test-browse.sh` - Quick bash test workflow
 
+## API Reference
+
+For machine-readable API spec, see [openapi.yaml](../api/openapi.yaml) — includes all commands, parameters, and response schemas.
+
 ## Source
 
 - GitHub: https://github.com/JordanCoin/Atl

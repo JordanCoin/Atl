@@ -78,27 +78,48 @@ components:
             # Navigation
             - goto
             - reload
-            - back
-            - forward
+            - goBack
+            - goForward
+            - getURL
+            - getTitle
             # Set-of-Mark (main feature)
             - markAll
             - markElements
             - clickMark
+            - getMarkInfo
             - unmarkElements
+            # Touch Gestures
+            - tap
+            - longPress
+            - swipe
+            - pinch
             # Interaction
             - click
+            - doubleClick
             - fill
             - type
             - press
             - hover
+            - scrollIntoView
             # Capture
             - screenshot
+            - captureForVision
             - captureLight
             - captureJPEG
             # Query
             - querySelector
             - querySelectorAll
+            - evaluate
+            - getDOMSnapshot
+            # Waiting
             - waitForSelector
+            - waitForReady
+            - waitForNavigation
+            - waitForAny
+            # Cookies
+            - getCookies
+            - setCookies
+            - deleteCookies
         params:
           type: object
           description: Method-specific parameters
@@ -160,6 +181,115 @@ components:
         key:
           type: string
           enum: [Enter, Tab, Escape, Backspace, ArrowUp, ArrowDown, ArrowLeft, ArrowRight]
+
+    # Touch Gestures
+    TapParams:
+      type: object
+      required: [x, y]
+      properties:
+        x:
+          type: number
+          description: X coordinate in viewport
+        y:
+          type: number
+          description: Y coordinate in viewport
+
+    LongPressParams:
+      type: object
+      required: [x, y]
+      properties:
+        x:
+          type: number
+        y:
+          type: number
+        duration:
+          type: number
+          default: 0.5
+          description: Duration in seconds
+
+    SwipeParams:
+      type: object
+      properties:
+        direction:
+          type: string
+          enum: [up, down, left, right]
+          description: Swipe direction (use this OR from/to coordinates)
+        distance:
+          type: number
+          default: 300
+          description: Swipe distance in pixels
+        fromX:
+          type: number
+        fromY:
+          type: number
+        toX:
+          type: number
+        toY:
+          type: number
+        duration:
+          type: number
+          default: 0.3
+
+    PinchParams:
+      type: object
+      properties:
+        scale:
+          type: number
+          default: 1.5
+          description: Scale factor (>1 zoom in, <1 zoom out)
+        duration:
+          type: number
+          default: 0.3
+
+    GetMarkInfoParams:
+      type: object
+      required: [label]
+      properties:
+        label:
+          type: integer
+          description: Mark label number from markAll/markElements
+
+    GetMarkInfoResult:
+      type: object
+      properties:
+        label:
+          type: integer
+        text:
+          type: string
+        tagName:
+          type: string
+        href:
+          type: string
+        x:
+          type: number
+        y:
+          type: number
+        width:
+          type: number
+        height:
+          type: number
+
+    # Waiting
+    WaitForReadyParams:
+      type: object
+      properties:
+        timeout:
+          type: number
+          default: 10
+        stabilityMs:
+          type: integer
+          default: 500
+        selector:
+          type: string
+          description: Optional selector that must exist
+
+    EvaluateParams:
+      type: object
+      required: [script]
+      properties:
+        script:
+          type: string
+          description: JavaScript to execute in page context
 
     # Capture
     ScreenshotParams:
@@ -256,9 +386,15 @@ components:
 tags:
   - name: Navigation
     description: Page navigation commands
+  - name: Marks
+    description: Set-of-Mark labeling system - the core feature
+  - name: Touch Gestures
+    description: Tap, swipe, pinch at coordinates (vision-free)
   - name: Interaction
     description: Click, type, fill forms
   - name: Capture
     description: Screenshots, PDFs, structured data
   - name: Query
-    description: Find elements on page
+    description: Find elements, execute JavaScript
+  - name: Waiting
+    description: Wait for selectors, navigation, page ready
