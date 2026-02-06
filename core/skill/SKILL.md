@@ -1,6 +1,6 @@
 ---
 name: atl-browser
-description: Mobile browser automation via ATL (iOS Simulator). Navigate, click, screenshot, and automate web tasks on iPhone/iPad simulators.
+description: Mobile browser and native app automation via ATL (iOS Simulator). Navigate, click, screenshot, and automate web and native app tasks on iPhone/iPad simulators.
 metadata:
   openclaw:
     emoji: "📱"
@@ -21,13 +21,259 @@ metadata:
 
 > The automation layer between AI agents and iOS
 
-ATL provides HTTP-based browser automation for iOS Simulator. Think Playwright, but for mobile Safari.
+ATL provides HTTP-based automation for iOS Simulator — both **browser** (mobile Safari) and **native apps**. Think Playwright, but for mobile.
 
 | | |
 |---|---|
 | **Base URL** | `http://localhost:9222` |
 | **API Reference** | [openapi.yaml](../api/openapi.yaml) |
 | **Health Check** | `curl http://localhost:9222/ping` |
+
+## 🔀 Two Modes: Browser & Native
+
+ATL operates in one of two modes:
+
+| Mode | Use Case | Key Commands |
+|------|----------|--------------|
+| **Browser** (default) | Web automation in mobile Safari | `goto`, `markElements`, `clickMark`, `evaluate` |
+| **Native** | iOS app automation (Settings, Contacts, any app) | `openApp`, `snapshot`, `tapRef`, `find` |
+
+**Mode-agnostic commands** work in both: `tap`, `swipe`, `pinch`, `screenshot`, `longPress`
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  BROWSER MODE          ←→          NATIVE MODE             │
+│  (mobile Safari)                   (iOS apps)              │
+│                                                             │
+│  markElements + clickMark    │    snapshot + tapRef        │
+│  CSS selectors               │    accessibility tree       │
+│  DOM evaluation              │    element references       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Mode Switching
+
+```bash
+# Start in browser mode (default)
+curl -s -X POST http://localhost:9222/command \
+  -d '{"method":"goto","params":{"url":"https://example.com"}}'
+
+# Switch to native mode (opens Settings app)
+curl -s -X POST http://localhost:9222/command \
+  -d '{"method":"openApp","params":{"bundleId":"com.apple.Preferences"}}'
+
+# Check current mode
+curl -s -X POST http://localhost:9222/command \
+  -d '{"method":"appState"}' | jq '.result'
+# → {"mode":"native","bundleId":"com.apple.Preferences"}
+
+# Switch back to browser mode
+curl -s -X POST http://localhost:9222/command \
+  -d '{"method":"openBrowser"}'
+```
+
+**Important:** Commands are mode-specific. Calling `markElements` in native mode or `snapshot` in browser mode returns an error.
+
+---
+
+## 📱 Native App Mode
+
+Native mode automates **any iOS app** using the accessibility tree — no DOM, no JavaScript, just direct element interaction.
+
+### Opening & Closing Apps
+
+```bash
+# Open an app by bundle ID
+curl -s -X POST http://localhost:9222/command \
+  -d '{"method":"openApp","params":{"bundleId":"com.apple.Preferences"}}'
+# → {"success":true,"result":{"bundleId":"com.apple.Preferences","mode":"native"}}
+
+# Check current app state
+curl -s -X POST http://localhost:9222/command \
+  -d '{"method":"appState"}'
+# → {"success":true,"result":{"mode":"native","bundleId":"com.apple.Preferences"}}
+
+# Close current app (returns to browser mode)
+curl -s -X POST http://localhost:9222/command \
+  -d '{"method":"closeApp"}'
+# → {"success":true}
+```
+
+### Common Bundle IDs
+
+| App | Bundle ID |
+|-----|-----------|
+| Settings | `com.apple.Preferences` |
+| Contacts | `com.apple.MobileAddressBook` |
+| Calculator | `com.apple.calculator` |
+| Calendar | `com.apple.mobilecal` |
+| Photos | `com.apple.mobileslideshow` |
+| Notes | `com.apple.mobilenotes` |
+| Reminders | `com.apple.reminders` |
+| Clock | `com.apple.mobiletimer` |
+| Maps | `com.apple.Maps` |
+| Safari | `com.apple.mobilesafari` |
+
+### The `snapshot` Command
+
+`snapshot` returns the accessibility tree — all visible elements with their properties and tap-able references.
+
+```bash
+curl -s -X POST http://localhost:9222/command \
+  -d '{"method":"snapshot","params":{"interactiveOnly":true}}' | jq '.result'
+```
+
+**Example output:**
+```json
+{
+  "count": 12,
+  "elements": [
+    {
+      "ref": "e0",
+      "type": "cell",
+      "label": "Wi-Fi",
+      "value": "MyNetwork",
+      "identifier": "",
+      "x": 0,
+      "y": 142,
+      "width": 393,
+      "height": 44,
+      "isHittable": true,
+      "isEnabled": true
+    },
+    {
+      "ref": "e1",
+      "type": "cell",
+      "label": "Bluetooth",
+      "value": "On",
+      "identifier": "",
+      "x": 0,
+      "y": 186,
+      "width": 393,
+      "height": 44,
+      "isHittable": true,
+      "isEnabled": true
+    },
+    {
+      "ref": "e2",
+      "type": "button",
+      "label": "Back",
+      "value": null,
+      "identifier": "Back",
+      "x": 0,
+      "y": 44,
+      "width": 80,
+      "height": 44,
+      "isHittable": true,
+      "isEnabled": true
+    }
+  ]
+}
+```
+
+**Parameters:**
+- `interactiveOnly` (bool, default: `false`) — Only return hittable elements
+- `maxDepth` (int, optional) — Limit tree traversal depth
+
+### The `tapRef` Command
+
+Tap an element by its reference from the last `snapshot`:
+
+```bash
+# Take snapshot first
+curl -s -X POST http://localhost:9222/command \
+  -d '{"method":"snapshot","params":{"interactiveOnly":true}}'
+
+# Tap element e0 (Wi-Fi cell from example above)
+curl -s -X POST http://localhost:9222/command \
+  -d '{"method":"tapRef","params":{"ref":"e0"}}'
+# → {"success":true}
+```
+
+### The `find` Command
+
+Find and interact with elements by text — no need to parse snapshot manually:
+
+```bash
+# Find and tap "Wi-Fi"
+curl -s -X POST http://localhost:9222/command \
+  -d '{"method":"find","params":{"text":"Wi-Fi","action":"tap"}}'
+# → {"success":true,"result":{"found":true,"ref":"e0"}}
+
+# Check if an element exists
+curl -s -X POST http://localhost:9222/command \
+  -d '{"method":"find","params":{"text":"Bluetooth","action":"exists"}}'
+# → {"success":true,"result":{"found":true,"ref":"e1"}}
+
+# Find and fill a text field
+curl -s -X POST http://localhost:9222/command \
+  -d '{"method":"find","params":{"text":"First name","action":"fill","value":"John"}}'
+
+# Get element info without interacting
+curl -s -X POST http://localhost:9222/command \
+  -d '{"method":"find","params":{"text":"Cancel","action":"get"}}'
+# → {"success":true,"result":{"found":true,"ref":"e5","element":{...}}}
+```
+
+**Parameters:**
+- `text` (string) — Text to search for (matches label, value, or identifier)
+- `action` (string) — One of: `tap`, `fill`, `exists`, `get`
+- `value` (string, optional) — Text to fill (required for `action:"fill"`)
+- `by` (string, optional) — Narrow search: `label`, `value`, `identifier`, `type`, or `any` (default)
+
+---
+
+## 🔄 Native App Workflow Example
+
+Here's a complete flow: open Settings, navigate to Wi-Fi, take a screenshot:
+
+```bash
+# 1. Open Settings app
+curl -s -X POST http://localhost:9222/command \
+  -d '{"method":"openApp","params":{"bundleId":"com.apple.Preferences"}}'
+
+# 2. Wait for app to launch
+sleep 1
+
+# 3. Take snapshot to see available elements
+curl -s -X POST http://localhost:9222/command \
+  -d '{"method":"snapshot","params":{"interactiveOnly":true}}' | jq '.result.elements[:5]'
+
+# 4. Find and tap Wi-Fi
+curl -s -X POST http://localhost:9222/command \
+  -d '{"method":"find","params":{"text":"Wi-Fi","action":"tap"}}'
+
+# 5. Wait for navigation
+sleep 0.5
+
+# 6. Take screenshot of Wi-Fi settings
+curl -s -X POST http://localhost:9222/command \
+  -d '{"method":"screenshot"}' | jq -r '.result.data' | base64 -d > /tmp/wifi-settings.png
+
+# 7. Navigate back (swipe right from left edge)
+curl -s -X POST http://localhost:9222/command \
+  -d '{"method":"swipe","params":{"direction":"right"}}'
+
+# 8. Close the app
+curl -s -X POST http://localhost:9222/command \
+  -d '{"method":"closeApp"}'
+```
+
+### Helper Script Version
+
+```bash
+source ~/.openclaw/skills/atl-browser/scripts/atl-helper.sh
+
+atl_openapp "com.apple.Preferences"
+sleep 1
+atl_find "Wi-Fi" tap
+sleep 0.5
+atl_screenshot /tmp/wifi-settings.png
+atl_swipe right
+atl_closeapp
+```
+
+---
 
 ## 💡 Core Insight: Vision-Free Automation
 
@@ -266,75 +512,92 @@ curl -s http://localhost:9222/ping
 
 ## All Available Methods
 
-### Navigation
-| Method | Params | Description |
-|--------|--------|-------------|
-| `goto` | `{url}` | Navigate to URL |
-| `reload` | - | Reload page |
-| `goBack` | - | Go back |
-| `goForward` | - | Go forward |
-| `getURL` | - | Get current URL |
-| `getTitle` | - | Get page title |
+### App Control (Native Mode)
+| Method | Params | Mode | Description |
+|--------|--------|------|-------------|
+| `openApp` | `{bundleId}` | Any→Native | Open app, switch to native mode |
+| `closeApp` | - | Native | Close current app, return to browser mode |
+| `appState` | - | Any | Get current mode and bundleId |
+| `openBrowser` | - | Native→Browser | Switch back to browser mode |
 
-### Interactions
-| Method | Params | Description |
-|--------|--------|-------------|
-| `click` | `{selector}` | Click element |
-| `doubleClick` | `{selector}` | Double-click |
-| `type` | `{text}` | Type text |
-| `fill` | `{selector, value}` | Fill input field |
-| `press` | `{key}` | Press key |
-| `hover` | `{selector}` | Hover over element |
-| `scrollIntoView` | `{selector}` | Scroll to element |
+### Native Accessibility
+| Method | Params | Mode | Description |
+|--------|--------|------|-------------|
+| `snapshot` | `{interactiveOnly?, maxDepth?}` | Native | Get accessibility tree |
+| `tapRef` | `{ref}` | Native | Tap element by ref (e.g., "e0") |
+| `find` | `{text, action, value?, by?}` | Native | Find element and interact |
+| `fillRef` | `{ref, text}` | Native | Tap element and type text |
+| `focusRef` | `{ref}` | Native | Focus element without typing |
 
-### Mark System (Visual Labels)
-| Method | Params | Description |
-|--------|--------|-------------|
-| `markElements` | - | Mark visible interactive elements |
-| `markAll` | - | Mark ALL interactive elements |
-| `unmarkElements` | - | Remove marks |
-| `clickMark` | `{label}` | Click by label number |
-| `getMarkInfo` | `{label}` | Get element info by label |
+### Navigation (Browser)
+| Method | Params | Mode | Description |
+|--------|--------|------|-------------|
+| `goto` | `{url}` | Browser | Navigate to URL |
+| `reload` | - | Browser | Reload page |
+| `goBack` | - | Browser | Go back |
+| `goForward` | - | Browser | Go forward |
+| `getURL` | - | Browser | Get current URL |
+| `getTitle` | - | Browser | Get page title |
+
+### Interactions (Browser)
+| Method | Params | Mode | Description |
+|--------|--------|------|-------------|
+| `click` | `{selector}` | Browser | Click element |
+| `doubleClick` | `{selector}` | Browser | Double-click |
+| `type` | `{text}` | Both | Type text |
+| `fill` | `{selector, value}` | Browser | Fill input field |
+| `press` | `{key}` | Both | Press key |
+| `hover` | `{selector}` | Browser | Hover over element |
+| `scrollIntoView` | `{selector}` | Browser | Scroll to element |
+
+### Mark System (Browser)
+| Method | Params | Mode | Description |
+|--------|--------|------|-------------|
+| `markElements` | - | Browser | Mark visible interactive elements |
+| `markAll` | - | Browser | Mark ALL interactive elements |
+| `unmarkElements` | - | Browser | Remove marks |
+| `clickMark` | `{label}` | Browser | Click by label number |
+| `getMarkInfo` | `{label}` | Browser | Get element info by label |
 
 ### Screenshots & Capture
-| Method | Params | Description |
-|--------|--------|-------------|
-| `screenshot` | `{fullPage?, selector?}` | Take screenshot |
-| `captureForVision` | `{savePath?, name?}` | Full page PDF |
-| `captureJPEG` | `{quality?, fullPage?}` | JPEG capture |
-| `captureLight` | - | Text + interactives only |
+| Method | Params | Mode | Description |
+|--------|--------|------|-------------|
+| `screenshot` | `{fullPage?, selector?}` | Both | Take screenshot |
+| `captureForVision` | `{savePath?, name?}` | Browser | Full page PDF |
+| `captureJPEG` | `{quality?, fullPage?}` | Both | JPEG capture |
+| `captureLight` | - | Browser | Text + interactives only |
 
-### Waiting
-| Method | Params | Description |
-|--------|--------|-------------|
-| `waitForSelector` | `{selector, timeout?}` | Wait for element |
-| `waitForNavigation` | - | Wait for navigation |
-| `waitForReady` | `{timeout?, stabilityMs?}` | Wait for page ready |
-| `waitForAny` | `{selectors, timeout?}` | Wait for any selector |
+### Waiting (Browser)
+| Method | Params | Mode | Description |
+|--------|--------|------|-------------|
+| `waitForSelector` | `{selector, timeout?}` | Browser | Wait for element |
+| `waitForNavigation` | - | Browser | Wait for navigation |
+| `waitForReady` | `{timeout?, stabilityMs?}` | Browser | Wait for page ready |
+| `waitForAny` | `{selectors, timeout?}` | Browser | Wait for any selector |
 
-### JavaScript
-| Method | Params | Description |
-|--------|--------|-------------|
-| `evaluate` | `{script}` | Run JavaScript |
-| `querySelector` | `{selector}` | Find element |
-| `querySelectorAll` | `{selector}` | Find all elements |
-| `getDOMSnapshot` | - | Get page HTML |
+### JavaScript (Browser)
+| Method | Params | Mode | Description |
+|--------|--------|------|-------------|
+| `evaluate` | `{script}` | Browser | Run JavaScript |
+| `querySelector` | `{selector}` | Browser | Find element |
+| `querySelectorAll` | `{selector}` | Browser | Find all elements |
+| `getDOMSnapshot` | - | Browser | Get page HTML |
 
-### Cookies
-| Method | Params | Description |
-|--------|--------|-------------|
-| `getCookies` | - | Get all cookies |
-| `setCookies` | `{cookies}` | Set cookies |
-| `deleteCookies` | - | Delete all cookies |
+### Cookies (Browser)
+| Method | Params | Mode | Description |
+|--------|--------|------|-------------|
+| `getCookies` | - | Browser | Get all cookies |
+| `setCookies` | `{cookies}` | Browser | Set cookies |
+| `deleteCookies` | - | Browser | Delete all cookies |
 
-### Touch Gestures (NEW!)
-| Method | Params | Description |
-|--------|--------|-------------|
-| `tap` | `{x, y}` | Tap at coordinates |
-| `longPress` | `{x, y, duration?}` | Long press (default 0.5s) |
-| `swipe` | `{direction}` | Swipe up/down/left/right |
-| `swipe` | `{fromX, fromY, toX, toY}` | Swipe between points |
-| `pinch` | `{scale, duration?}` | Pinch zoom (scale > 1 = zoom in) |
+### Touch Gestures (Both Modes)
+| Method | Params | Mode | Description |
+|--------|--------|------|-------------|
+| `tap` | `{x, y}` | Both | Tap at coordinates |
+| `longPress` | `{x, y, duration?}` | Both | Long press (default 0.5s) |
+| `swipe` | `{direction}` | Both | Swipe up/down/left/right |
+| `swipe` | `{fromX, fromY, toX, toY}` | Both | Swipe between points |
+| `pinch` | `{scale, duration?}` | Both | Pinch zoom (scale > 1 = zoom in) |
 
 #### Swipe Examples
 

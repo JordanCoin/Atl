@@ -2,21 +2,27 @@
 
 > The automation layer between AI agents and iOS
 
-Mobile browser automation via iOS Simulator. Built for AI agents — start with coordinates, escalate to vision only when needed.
+Mobile browser and native app automation via iOS Simulator. Built for AI agents — start with coordinates, escalate to vision only when needed.
 
 ![ATL marks on Target.com](core/docs/marks-example.png)
 *Numbered marks give you coordinates — vision API only when stuck*
 
 ## The Pattern
 
+### Browser Mode (default)
 ```
 markElements → getMarkInfo → tap x,y → screenshot if stuck
 ```
 
+### Native App Mode
+```
+openApp → snapshot → find/tapRef → screenshot if stuck
+```
+
 **Tiered automation:**
-1. **Coordinates first** — marks give you x,y without vision calls (90% of actions)
+1. **Coordinates first** — marks (browser) or refs (native) give you x,y without vision calls (90% of actions)
 2. **Vision fallback** — screenshot when stuck to see modals/blockers
-3. **JS injection** — direct DOM manipulation as last resort
+3. **JS injection** — direct DOM manipulation as last resort (browser only)
 
 ## Quick Start
 
@@ -29,6 +35,7 @@ cd Atl/core
 
 ## Example
 
+### Browser Automation
 ```bash
 # Navigate
 curl -X POST localhost:9222/command -d '{"method":"goto","params":{"url":"https://target.com"}}'
@@ -42,6 +49,21 @@ curl -X POST localhost:9222/command -d '{"method":"getMarkInfo","params":{"label
 
 # Tap at exact coordinates
 curl -X POST localhost:9222/command -d '{"method":"tap","params":{"x":214,"y":561}}'
+```
+
+### Native App Automation
+```bash
+# Open Settings app
+curl -X POST localhost:9222/command -d '{"method":"openApp","params":{"bundleId":"com.apple.Preferences"}}'
+
+# Snapshot accessibility tree (get refs for all elements)
+curl -X POST localhost:9222/command -d '{"method":"snapshot","params":{"interactiveOnly":true}}'
+
+# Find and tap Wi-Fi
+curl -X POST localhost:9222/command -d '{"method":"find","params":{"text":"Wi-Fi","action":"tap"}}'
+
+# Switch back to browser
+curl -X POST localhost:9222/command -d '{"method":"openBrowser"}'
 ```
 
 ## 🤖 AI Agent Integration

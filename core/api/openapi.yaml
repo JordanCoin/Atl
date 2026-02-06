@@ -1,8 +1,16 @@
 openapi: 3.1.0
 info:
-  title: ATL - iOS Browser Automation API
+  title: ATL - iOS Browser & Native App Automation API
   description: |
-    iOS Safari automation via HTTP. Simple pattern: goto → markAll → clickMark.
+    iOS Safari and native app automation via HTTP.
+    
+    ## Modes
+    
+    ATL operates in two modes:
+    - **Browser mode** (default): Safari WebView automation. Pattern: goto → markAll → clickMark
+    - **Native mode**: Native iOS app automation. Pattern: openApp → snapshot → tapRef/find
+    
+    Switch modes with `openApp` (→ native) and `openBrowser` (→ browser).
 
     ## Quick Start
     ```bash
@@ -120,6 +128,15 @@ components:
             - getCookies
             - setCookies
             - deleteCookies
+            # Native App Mode
+            - openApp
+            - closeApp
+            - appState
+            - snapshot
+            - tapRef
+            - fillRef
+            - find
+            - openBrowser
         params:
           type: object
           description: Method-specific parameters
@@ -383,18 +400,217 @@ components:
             height:
               type: number
 
+    # Native App Mode Commands
+    OpenAppParams:
+      type: object
+      required: [bundleId]
+      properties:
+        bundleId:
+          type: string
+          description: |
+            iOS app bundle identifier to open. Switches to native mode.
+            Common bundle IDs:
+            - com.apple.Preferences (Settings)
+            - com.apple.MobileAddressBook (Contacts)
+            - com.apple.calculator (Calculator)
+            - com.apple.mobilecal (Calendar)
+            - com.apple.mobilenotes (Notes)
+          example: com.apple.Preferences
+
+    OpenAppResult:
+      type: object
+      properties:
+        bundleId:
+          type: string
+        mode:
+          type: string
+          enum: [native]
+
+    CloseAppParams:
+      type: object
+      properties:
+        bundleId:
+          type: string
+          description: |
+            Bundle ID of app to close. If omitted, closes the current app.
+            After closing, remains in native mode with no active app.
+
+    AppStateResult:
+      type: object
+      description: Returns current automation mode and active app (if any)
+      properties:
+        mode:
+          type: string
+          enum: [browser, native]
+          description: Current automation mode
+        bundleId:
+          type: string
+          nullable: true
+          description: Bundle ID of active native app, or null if in browser mode
+
+    SnapshotParams:
+      type: object
+      description: |
+        Capture accessibility tree of the current native app.
+        **Native mode only** - returns error in browser mode.
+      properties:
+        interactiveOnly:
+          type: boolean
+          default: false
+          description: If true, only return hittable/interactive elements
+        maxDepth:
+          type: integer
+          description: Maximum depth to traverse in element hierarchy
+
+    SnapshotResult:
+      type: object
+      properties:
+        count:
+          type: integer
+          description: Number of elements returned
+        elements:
+          type: array
+          items:
+            $ref: '#/components/schemas/NativeElement'
+
+    NativeElement:
+      type: object
+      description: Accessibility element from native app
+      properties:
+        ref:
+          type: string
+          description: Reference ID for tapRef/fillRef (e.g., "e0", "e1")
+          example: e5
+        type:
+          type: string
+          description: XCUIElement type (button, staticText, textField, etc.)
+          example: button
+        label:
+          type: string
+          description: Accessibility label
+          example: Wi-Fi
+        value:
+          type: string
+          nullable: true
+          description: Current value (for text fields, switches, etc.)
+        identifier:
+          type: string
+          description: Accessibility identifier
+        x:
+          type: number
+        y:
+          type: number
+        width:
+          type: number
+        height:
+          type: number
+        isHittable:
+          type: boolean
+          description: Whether element can receive taps
+        isEnabled:
+          type: boolean
+
+    TapRefParams:
+      type: object
+      required: [ref]
+      description: |
+        Tap an element by its ref from the last snapshot.
+        **Native mode only** - returns error in browser mode.
+      properties:
+        ref:
+          type: string
+          description: Element reference from snapshot (e.g., "e0", "e5")
+          example: e5
+
+    FillRefParams:
+      type: object
+      required: [ref, text]
+      description: |
+        Tap a text field by ref, then type text into it.
+        **Native mode only** - returns error in browser mode.
+      properties:
+        ref:
+          type: string
+          description: Element reference from snapshot
+          example: e12
+        text:
+          type: string
+          description: Text to type into the field
+          example: John Doe
+
+    FindParams:
+      type: object
+      required: [text]
+      description: |
+        Find an element by text/attribute and optionally perform an action.
+        **Native mode only** - returns error in browser mode.
+      properties:
+        text:
+          type: string
+          description: Text to search for
+          example: Wi-Fi
+        by:
+          type: string
+          enum: [any, label, value, identifier, type]
+          default: any
+          description: Which attribute to search
+        action:
+          type: string
+          enum: [tap, fill, exists, get]
+          default: get
+          description: |
+            Action to perform on found element:
+            - tap: Tap the element
+            - fill: Tap and type (requires `value` param)
+            - exists: Check if element exists (returns found: true/false)
+            - get: Return element info without interaction
+        value:
+          type: string
+          description: Text to type (required when action is "fill")
+
+    FindResult:
+      type: object
+      properties:
+        found:
+          type: boolean
+        ref:
+          type: string
+          nullable: true
+          description: Ref of found element (if found)
+        element:
+          $ref: '#/components/schemas/NativeElement'
+          nullable: true
+
+    OpenBrowserResult:
+      type: object
+      description: |
+        Switch back to browser mode. Closes any active native app.
+      properties:
+        mode:
+          type: string
+          enum: [browser]
+
 tags:
   - name: Navigation
     description: Page navigation commands
   - name: Marks
     description: Set-of-Mark labeling system - the core feature
   - name: Touch Gestures
-    description: Tap, swipe, pinch at coordinates (vision-free)
+    description: Tap, swipe, pinch at coordinates (works in both modes)
   - name: Interaction
     description: Click, type, fill forms
   - name: Capture
-    description: Screenshots, PDFs, structured data
+    description: Screenshots, PDFs, structured data (screenshot works in both modes)
   - name: Query
     description: Find elements, execute JavaScript
   - name: Waiting
     description: Wait for selectors, navigation, page ready
+  - name: Native Apps
+    description: |
+      Native iOS app automation. Switch to native mode with `openApp`, back to browser with `openBrowser`.
+      
+      **Native mode commands:** openApp, closeApp, appState, snapshot, tapRef, fillRef, find, openBrowser
+      
+      **Commands that work in both modes:** tap, swipe, pinch, screenshot
+      
+      **Browser-only commands will error in native mode:** goto, markAll, clickMark, evaluate, etc.

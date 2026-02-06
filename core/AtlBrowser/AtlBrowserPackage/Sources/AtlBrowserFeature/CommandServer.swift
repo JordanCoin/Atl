@@ -1,12 +1,87 @@
 import Foundation
 import Network
 
+// MARK: - Automation Mode
+
+/// The current automation mode - browser (web) or native (app)
+enum AutomationMode: String, Codable {
+    case browser
+    case native
+}
+
+// MARK: - Native App Types (defined here for CommandServer, implemented in NativeController)
+
+/// How to search for elements in native apps
+enum FindBy: String, Codable {
+    case any
+    case label
+    case value
+    case identifier
+    case type
+}
+
+/// What action to take when finding elements
+enum FindAction: String, Codable {
+    case tap
+    case fill
+    case exists
+    case get
+}
+
+/// State of a native app
+enum AppStateValue: String, Codable {
+    case none
+    case launching
+    case running
+    case suspended
+    case terminated
+}
+
+/// Represents the current state of a native app
+struct AppState {
+    let bundleId: String?
+    let state: AppStateValue
+}
+
+/// Information about a single UI element in native app snapshot
+struct ElementInfo {
+    let ref: String
+    let type: String
+    let label: String?
+    let value: String?
+    let identifier: String?
+    let frame: CGRect
+    let isHittable: Bool
+    let isEnabled: Bool
+}
+
+/// Result of a native app snapshot
+struct SnapshotResult {
+    let elements: [ElementInfo]
+    let bundleId: String?
+}
+
+/// Result of a find operation in native apps
+struct FindResult {
+    let found: Bool
+    let ref: String?
+    let element: ElementInfo?
+}
+
 /// HTTP server that receives automation commands from the host macOS app
 @MainActor
 final class CommandServer {
     private let port: UInt16
     private weak var controller: BrowserController?
     private var listener: NWListener?
+    
+    // MARK: - Native App Support
+    
+    /// Current automation mode - browser or native app
+    private(set) var mode: AutomationMode = .browser
+    
+    /// Controller for native app automation (nil when in browser mode)
+    private var nativeController: NativeController?
 
     init(port: UInt16, controller: BrowserController) {
         self.port = port
@@ -324,22 +399,29 @@ final class CommandServer {
                     result = ["value": value ?? NSNull()]
                 }
 
-            // Screenshots
+            // Screenshots (Both Modes)
             case "screenshot":
-                let fullPage = command.params?["fullPage"] as? Bool ?? false
-                let selector = command.params?["selector"] as? String
-
-                let imageData: Data
-                if let selector = selector {
-                    imageData = try await controller.takeScreenshot(selector: selector)
-                } else if fullPage {
-                    // Full page PDF screenshot - captures entire scrollable content
-                    imageData = try await controller.takeFullPageScreenshot()
+                if mode == .native, let native = nativeController {
+                    // Native mode screenshot
+                    let imageData = try await native.screenshot()
+                    result = ["data": imageData.base64EncodedString(), "format": "png", "mode": "native"]
                 } else {
-                    imageData = try await controller.takeScreenshot()
+                    // Browser mode screenshot
+                    let fullPage = command.params?["fullPage"] as? Bool ?? false
+                    let selector = command.params?["selector"] as? String
+
+                    let imageData: Data
+                    if let selector = selector {
+                        imageData = try await controller.takeScreenshot(selector: selector)
+                    } else if fullPage {
+                        // Full page PDF screenshot - captures entire scrollable content
+                        imageData = try await controller.takeFullPageScreenshot()
+                    } else {
+                        imageData = try await controller.takeScreenshot()
+                    }
+                    // For fullPage, data is PDF; otherwise PNG
+                    result = ["data": imageData.base64EncodedString(), "format": fullPage ? "pdf" : "png", "mode": "browser"]
                 }
-                // For fullPage, data is PDF; otherwise PNG
-                result = ["data": imageData.base64EncodedString(), "format": fullPage ? "pdf" : "png"]
 
             // Vision Capture - full page PDF with metadata for vision-based automation
             case "captureForVision":
@@ -451,33 +533,6 @@ final class CommandServer {
             case "getDOMSnapshot":
                 let snapshot = await controller.getDOMSnapshot()
                 result = ["html": snapshot ?? ""]
-
-            // MARK: - Set-of-Mark Commands
-
-            case "markElements":
-                let elements = try await controller.markInteractiveElements()
-                result = ["elements": elements, "count": elements.count]
-
-            case "markAll":
-                let elements = try await controller.markAllInteractiveElements()
-                result = ["elements": elements, "count": elements.count]
-
-            case "unmarkElements":
-                try await controller.unmarkElements()
-                result = ["cleared": true]
-
-            case "clickMark":
-                if let label = command.params?["label"] as? Int {
-                    try await controller.clickByMark(label)
-                    result = ["clicked": label]
-                }
-
-            case "getMarkInfo":
-                if let label = command.params?["label"] as? Int {
-                    if let info = try await controller.getMarkInfo(label) {
-                        result = info
-                    }
-                }
 
             case "captureFailureArtifacts":
                 let failedSelector = command.params?["failedSelector"] as? String ?? "unknown"
@@ -706,16 +761,20 @@ final class CommandServer {
 
                 result = ["cache": exportData, "domains": cache.count]
 
-            // MARK: - Touch Gestures
+            // MARK: - Touch Gestures (Both Modes)
 
             case "tap":
                 let x = (command.params?["x"] as? Double) ?? Double(command.params?["x"] as? Int ?? 0)
                 let y = (command.params?["y"] as? Double) ?? Double(command.params?["y"] as? Int ?? 0)
                 let point = CGPoint(x: x, y: y)
                 
-                let gestureSimulator = TouchGestureSimulator(webView: controller.webView)
-                try await gestureSimulator.tap(at: point)
-                result = ["tapped": true, "x": x, "y": y]
+                if mode == .native, let native = nativeController {
+                    try await native.tap(at: point)
+                } else {
+                    let gestureSimulator = TouchGestureSimulator(webView: controller.webView)
+                    try await gestureSimulator.tap(at: point)
+                }
+                result = ["tapped": true, "x": x, "y": y, "mode": mode.rawValue]
 
             case "longPress":
                 let x = (command.params?["x"] as? Double) ?? Double(command.params?["x"] as? Int ?? 0)
@@ -723,43 +782,283 @@ final class CommandServer {
                 let duration = command.params?["duration"] as? Double ?? 0.5
                 let point = CGPoint(x: x, y: y)
                 
-                let gestureSimulator = TouchGestureSimulator(webView: controller.webView)
-                try await gestureSimulator.longPress(at: point, duration: duration)
-                result = ["longPressed": true, "x": x, "y": y, "duration": duration]
+                if mode == .native, let native = nativeController {
+                    try await native.longPress(at: point, duration: duration)
+                } else {
+                    let gestureSimulator = TouchGestureSimulator(webView: controller.webView)
+                    try await gestureSimulator.longPress(at: point, duration: duration)
+                }
+                result = ["longPressed": true, "x": x, "y": y, "duration": duration, "mode": mode.rawValue]
 
             case "swipe":
-                let gestureSimulator = TouchGestureSimulator(webView: controller.webView)
-                
-                if let directionStr = command.params?["direction"] as? String,
-                   let direction = SwipeDirection(rawValue: directionStr.lowercased()) {
-                    // Directional swipe
-                    let distance = command.params?["distance"] as? Double ?? 300
-                    let duration = command.params?["duration"] as? Double ?? 0.3
-                    try await gestureSimulator.swipe(direction: direction, distance: CGFloat(distance), duration: duration)
-                    result = ["swiped": true, "direction": directionStr, "distance": distance]
+                if mode == .native, let native = nativeController {
+                    // Native mode swipe
+                    if let directionStr = command.params?["direction"] as? String {
+                        let distance = command.params?["distance"] as? Double ?? 300
+                        let duration = command.params?["duration"] as? Double ?? 0.3
+                        try await native.swipe(direction: directionStr, distance: distance, duration: duration)
+                        result = ["swiped": true, "direction": directionStr, "distance": distance, "mode": "native"]
+                    } else {
+                        let fromX = command.params?["fromX"] as? Double ?? command.params?["startX"] as? Double ?? 0
+                        let fromY = command.params?["fromY"] as? Double ?? command.params?["startY"] as? Double ?? 0
+                        let toX = command.params?["toX"] as? Double ?? command.params?["endX"] as? Double ?? 0
+                        let toY = command.params?["toY"] as? Double ?? command.params?["endY"] as? Double ?? 0
+                        let duration = command.params?["duration"] as? Double ?? 0.3
+                        try await native.swipe(from: CGPoint(x: fromX, y: fromY), to: CGPoint(x: toX, y: toY), duration: duration)
+                        result = ["swiped": true, "from": ["x": fromX, "y": fromY], "to": ["x": toX, "y": toY], "mode": "native"]
+                    }
                 } else {
-                    // Coordinate-based swipe
-                    let fromX = command.params?["fromX"] as? Double ?? command.params?["startX"] as? Double ?? 0
-                    let fromY = command.params?["fromY"] as? Double ?? command.params?["startY"] as? Double ?? 0
-                    let toX = command.params?["toX"] as? Double ?? command.params?["endX"] as? Double ?? 0
-                    let toY = command.params?["toY"] as? Double ?? command.params?["endY"] as? Double ?? 0
-                    let duration = command.params?["duration"] as? Double ?? 0.3
+                    // Browser mode swipe
+                    let gestureSimulator = TouchGestureSimulator(webView: controller.webView)
                     
-                    try await gestureSimulator.swipe(
-                        from: CGPoint(x: fromX, y: fromY),
-                        to: CGPoint(x: toX, y: toY),
-                        duration: duration
-                    )
-                    result = ["swiped": true, "from": ["x": fromX, "y": fromY], "to": ["x": toX, "y": toY]]
+                    if let directionStr = command.params?["direction"] as? String,
+                       let direction = SwipeDirection(rawValue: directionStr.lowercased()) {
+                        let distance = command.params?["distance"] as? Double ?? 300
+                        let duration = command.params?["duration"] as? Double ?? 0.3
+                        try await gestureSimulator.swipe(direction: direction, distance: CGFloat(distance), duration: duration)
+                        result = ["swiped": true, "direction": directionStr, "distance": distance, "mode": "browser"]
+                    } else {
+                        let fromX = command.params?["fromX"] as? Double ?? command.params?["startX"] as? Double ?? 0
+                        let fromY = command.params?["fromY"] as? Double ?? command.params?["startY"] as? Double ?? 0
+                        let toX = command.params?["toX"] as? Double ?? command.params?["endX"] as? Double ?? 0
+                        let toY = command.params?["toY"] as? Double ?? command.params?["endY"] as? Double ?? 0
+                        let duration = command.params?["duration"] as? Double ?? 0.3
+                        
+                        try await gestureSimulator.swipe(
+                            from: CGPoint(x: fromX, y: fromY),
+                            to: CGPoint(x: toX, y: toY),
+                            duration: duration
+                        )
+                        result = ["swiped": true, "from": ["x": fromX, "y": fromY], "to": ["x": toX, "y": toY], "mode": "browser"]
+                    }
                 }
 
             case "pinch":
                 let scale = command.params?["scale"] as? Double ?? 1.5
                 let duration = command.params?["duration"] as? Double ?? 0.3
                 
-                let gestureSimulator = TouchGestureSimulator(webView: controller.webView)
-                try await gestureSimulator.pinch(scale: CGFloat(scale), duration: duration)
-                result = ["pinched": true, "scale": scale]
+                if mode == .native, let native = nativeController {
+                    try await native.pinch(scale: scale, duration: duration)
+                } else {
+                    let gestureSimulator = TouchGestureSimulator(webView: controller.webView)
+                    try await gestureSimulator.pinch(scale: CGFloat(scale), duration: duration)
+                }
+                result = ["pinched": true, "scale": scale, "mode": mode.rawValue]
+
+            // MARK: - Native App Commands
+
+            case "openApp":
+                guard let bundleId = command.params?["bundleId"] as? String else {
+                    return CommandResponse(id: command.id, success: false, result: nil, error: "bundleId required")
+                }
+                
+                // Create native controller if needed
+                if nativeController == nil {
+                    nativeController = NativeController()
+                }
+                
+                let appState = try await nativeController!.openApp(bundleId: bundleId)
+                mode = .native
+                
+                result = [
+                    "bundleId": appState.bundleId ?? bundleId,
+                    "mode": mode.rawValue,
+                    "state": appState.state.rawValue
+                ]
+
+            case "closeApp":
+                guard mode == .native else {
+                    return CommandResponse(id: command.id, success: false, result: nil, error: "closeApp requires native mode")
+                }
+                guard let native = nativeController else {
+                    return CommandResponse(id: command.id, success: false, result: nil, error: "No native controller available")
+                }
+                
+                let bundleId = command.params?["bundleId"] as? String
+                try await native.closeApp(bundleId: bundleId)
+                result = ["closed": true]
+
+            case "appState":
+                if mode == .native, let native = nativeController {
+                    let state = native.appState()
+                    result = [
+                        "mode": mode.rawValue,
+                        "bundleId": state.bundleId ?? NSNull(),
+                        "state": state.state.rawValue
+                    ]
+                } else {
+                    result = [
+                        "mode": mode.rawValue,
+                        "bundleId": NSNull(),
+                        "state": "none"
+                    ]
+                }
+
+            case "snapshot":
+                guard mode == .native else {
+                    return CommandResponse(id: command.id, success: false, result: nil, error: "snapshot requires native mode (use markElements for browser)")
+                }
+                guard let native = nativeController else {
+                    return CommandResponse(id: command.id, success: false, result: nil, error: "No native controller available")
+                }
+                
+                let interactiveOnly = command.params?["interactiveOnly"] as? Bool ?? false
+                let maxDepth = command.params?["maxDepth"] as? Int
+                
+                let snapshotResult = try await native.snapshot(interactiveOnly: interactiveOnly, maxDepth: maxDepth)
+                
+                // Convert elements to dictionaries
+                var elementsArray: [[String: Any]] = []
+                for element in snapshotResult.elements {
+                    elementsArray.append([
+                        "ref": element.ref,
+                        "type": element.type,
+                        "label": element.label ?? "",
+                        "value": element.value ?? "",
+                        "identifier": element.identifier ?? "",
+                        "x": element.frame.origin.x,
+                        "y": element.frame.origin.y,
+                        "width": element.frame.size.width,
+                        "height": element.frame.size.height,
+                        "isHittable": element.isHittable,
+                        "isEnabled": element.isEnabled
+                    ])
+                }
+                
+                result = [
+                    "count": snapshotResult.elements.count,
+                    "elements": elementsArray,
+                    "bundleId": snapshotResult.bundleId ?? ""
+                ]
+
+            case "tapRef":
+                guard mode == .native else {
+                    return CommandResponse(id: command.id, success: false, result: nil, error: "tapRef requires native mode (use clickMark for browser)")
+                }
+                guard let native = nativeController else {
+                    return CommandResponse(id: command.id, success: false, result: nil, error: "No native controller available")
+                }
+                guard let ref = command.params?["ref"] as? String else {
+                    return CommandResponse(id: command.id, success: false, result: nil, error: "ref required")
+                }
+                
+                try await native.tapRef(ref: ref)
+                result = ["tapped": true, "ref": ref]
+
+            case "fillRef":
+                guard mode == .native else {
+                    return CommandResponse(id: command.id, success: false, result: nil, error: "fillRef requires native mode")
+                }
+                guard let native = nativeController else {
+                    return CommandResponse(id: command.id, success: false, result: nil, error: "No native controller available")
+                }
+                guard let ref = command.params?["ref"] as? String else {
+                    return CommandResponse(id: command.id, success: false, result: nil, error: "ref required")
+                }
+                guard let text = command.params?["text"] as? String else {
+                    return CommandResponse(id: command.id, success: false, result: nil, error: "text required")
+                }
+                
+                try await native.fillRef(ref: ref, text: text)
+                result = ["filled": true, "ref": ref]
+
+            case "focusRef":
+                guard mode == .native else {
+                    return CommandResponse(id: command.id, success: false, result: nil, error: "focusRef requires native mode")
+                }
+                guard let native = nativeController else {
+                    return CommandResponse(id: command.id, success: false, result: nil, error: "No native controller available")
+                }
+                guard let ref = command.params?["ref"] as? String else {
+                    return CommandResponse(id: command.id, success: false, result: nil, error: "ref required")
+                }
+                
+                try await native.focusRef(ref: ref)
+                result = ["focused": true, "ref": ref]
+
+            case "find":
+                guard mode == .native else {
+                    return CommandResponse(id: command.id, success: false, result: nil, error: "find requires native mode (use querySelector for browser)")
+                }
+                guard let native = nativeController else {
+                    return CommandResponse(id: command.id, success: false, result: nil, error: "No native controller available")
+                }
+                guard let text = command.params?["text"] as? String else {
+                    return CommandResponse(id: command.id, success: false, result: nil, error: "text required")
+                }
+                
+                let byStr = command.params?["by"] as? String ?? "any"
+                let actionStr = command.params?["action"] as? String ?? "get"
+                let value = command.params?["value"] as? String
+                
+                let by = FindBy(rawValue: byStr) ?? .any
+                let action = FindAction(rawValue: actionStr) ?? .get
+                
+                let findResult = try await native.find(text: text, by: by, action: action, value: value)
+                
+                var elementDict: [String: Any]? = nil
+                if let element = findResult.element {
+                    elementDict = [
+                        "ref": element.ref,
+                        "type": element.type,
+                        "label": element.label ?? "",
+                        "value": element.value ?? ""
+                    ]
+                }
+                
+                result = [
+                    "found": findResult.found,
+                    "ref": findResult.ref ?? NSNull(),
+                    "element": elementDict ?? NSNull()
+                ]
+
+            case "openBrowser":
+                // Switch back to browser mode
+                nativeController = nil
+                mode = .browser
+                result = ["mode": mode.rawValue]
+
+            // MARK: - Mode-Specific Browser Commands (Add validation)
+
+            case "markElements":
+                guard mode == .browser else {
+                    return CommandResponse(id: command.id, success: false, result: nil, error: "markElements requires browser mode (use snapshot for native)")
+                }
+                let elements = try await controller.markInteractiveElements()
+                result = ["elements": elements, "count": elements.count]
+
+            case "markAll":
+                guard mode == .browser else {
+                    return CommandResponse(id: command.id, success: false, result: nil, error: "markAll requires browser mode")
+                }
+                let elements = try await controller.markAllInteractiveElements()
+                result = ["elements": elements, "count": elements.count]
+
+            case "unmarkElements":
+                guard mode == .browser else {
+                    return CommandResponse(id: command.id, success: false, result: nil, error: "unmarkElements requires browser mode")
+                }
+                try await controller.unmarkElements()
+                result = ["cleared": true]
+
+            case "clickMark":
+                guard mode == .browser else {
+                    return CommandResponse(id: command.id, success: false, result: nil, error: "clickMark requires browser mode (use tapRef for native)")
+                }
+                if let label = command.params?["label"] as? Int {
+                    try await controller.clickByMark(label)
+                    result = ["clicked": label]
+                }
+
+            case "getMarkInfo":
+                guard mode == .browser else {
+                    return CommandResponse(id: command.id, success: false, result: nil, error: "getMarkInfo requires browser mode")
+                }
+                if let label = command.params?["label"] as? Int {
+                    if let info = try await controller.getMarkInfo(label) {
+                        result = info
+                    }
+                }
 
             default:
                 return CommandResponse(id: command.id, success: false, result: nil, error: "Unknown command: \(command.method)")

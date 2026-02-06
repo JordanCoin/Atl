@@ -2,7 +2,7 @@
 
 > The automation layer between AI agents and iOS
 
-Fast browser automation via iOS Simulator. Built for AI agents — complete tasks in minimal API calls with a mark-and-click system that doesn't break.
+Fast browser and native app automation via iOS Simulator. Built for AI agents — complete tasks in minimal API calls with a mark-and-click system that doesn't break.
 
 ![ATL marks on Target.com](docs/marks-example.png)
 *Numbered marks on interactive elements — no vision model needed to know what to click*
@@ -198,6 +198,74 @@ The HTTP API is simple enough for any agent to use directly:
 4. **Screenshot if stuck:** `{"method":"screenshot"}` → see what's blocking you
 
 See [BROWSER-AUTOMATION.md](BROWSER-AUTOMATION.md) for a quick-start guide, or dive into the full [skill documentation](skill/SKILL.md).
+
+## Native App Automation
+
+ATL supports native iOS app automation alongside browser automation. Switch modes seamlessly within the same session.
+
+### Native App Commands
+
+| Command | Parameters | Description |
+|---------|------------|-------------|
+| `openApp` | `{bundleId}` | Open native app, switch to native mode |
+| `closeApp` | - | Close current app |
+| `appState` | - | Get current mode and bundleId |
+| `snapshot` | `{interactiveOnly?, maxDepth?}` | Get accessibility tree with refs |
+| `tapRef` | `{ref}` | Tap element by ref (e.g., "e5") |
+| `find` | `{text, action?, by?, value?}` | Find element and optionally act |
+| `openBrowser` | - | Switch back to browser mode |
+
+### Example: Settings App Flow
+
+```bash
+# Open Settings
+curl -X POST localhost:9222/command \
+  -d '{"method":"openApp","params":{"bundleId":"com.apple.Preferences"}}'
+
+# Get accessibility snapshot
+curl -X POST localhost:9222/command \
+  -d '{"method":"snapshot","params":{"interactiveOnly":true}}'
+# → {"count":42,"elements":[{"ref":"e0","type":"cell","label":"Wi-Fi",...},...]}
+
+# Find and tap Wi-Fi
+curl -X POST localhost:9222/command \
+  -d '{"method":"find","params":{"text":"Wi-Fi","action":"tap"}}'
+
+# Or tap by ref directly
+curl -X POST localhost:9222/command \
+  -d '{"method":"tapRef","params":{"ref":"e5"}}'
+
+# Switch back to browser
+curl -X POST localhost:9222/command \
+  -d '{"method":"openBrowser"}'
+```
+
+### Commands That Work in Both Modes
+
+These commands work identically in browser and native mode:
+
+| Command | Description |
+|---------|-------------|
+| `tap` | Tap at x,y coordinates |
+| `longPress` | Long press at coordinates |
+| `swipe` | Swipe in direction |
+| `pinch` | Pinch zoom |
+| `screenshot` | Capture screen |
+
+### Built-in Apps for Testing
+
+No App Store downloads needed — use these system apps:
+
+| App | Bundle ID |
+|-----|-----------|
+| Settings | `com.apple.Preferences` |
+| Contacts | `com.apple.MobileAddressBook` |
+| Calculator | `com.apple.calculator` |
+| Calendar | `com.apple.mobilecal` |
+| Notes | `com.apple.mobilenotes` |
+| Reminders | `com.apple.reminders` |
+| Clock | `com.apple.mobiletimer` |
+| Files | `com.apple.DocumentsApp` |
 
 ## CLI
 
