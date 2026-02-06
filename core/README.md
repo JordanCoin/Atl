@@ -1,6 +1,8 @@
-# ATL - iOS Browser Automation API
+# ATL — Agent Touch Layer
 
-Fast browser automation via iOS Simulator. Complete tasks in minimal API calls.
+> The automation layer between AI agents and iOS
+
+Fast browser automation via iOS Simulator. Built for AI agents — complete tasks in minimal API calls with a mark-and-click system that doesn't break.
 
 ## Quick Start
 
@@ -139,11 +141,22 @@ The PDF shows numbered labels on every element.
 - **Smaller** - text-heavy pages compress well
 - **Multimodal** - send directly to Claude/GPT-4V for analysis
 
-## Using with Claude
+## Using with AI Agents
+
+### OpenClaw Skill
+
+Install the ATL skill for [OpenClaw](https://github.com/openclaw/openclaw):
+
+```bash
+# ATL skill is available in the OpenClaw skills marketplace
+openclaw skills install atl-browser
+```
+
+### Claude / Other Agents
 
 See [BROWSER-AUTOMATION.md](BROWSER-AUTOMATION.md) for a drop-in guide teaching Claude to use this API autonomously.
 
-The pattern is simple enough that Claude can:
+The pattern is simple enough that any AI agent can:
 1. Search `markAll` JSON to find elements by text
 2. Click by label number
 3. Repeat until task complete

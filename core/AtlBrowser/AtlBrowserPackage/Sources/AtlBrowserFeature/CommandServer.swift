@@ -704,6 +704,61 @@ final class CommandServer {
 
                 result = ["cache": exportData, "domains": cache.count]
 
+            // MARK: - Touch Gestures
+
+            case "tap":
+                let x = (command.params?["x"] as? Double) ?? Double(command.params?["x"] as? Int ?? 0)
+                let y = (command.params?["y"] as? Double) ?? Double(command.params?["y"] as? Int ?? 0)
+                let point = CGPoint(x: x, y: y)
+                
+                let gestureSimulator = TouchGestureSimulator(webView: controller.webView)
+                try await gestureSimulator.tap(at: point)
+                result = ["tapped": true, "x": x, "y": y]
+
+            case "longPress":
+                let x = (command.params?["x"] as? Double) ?? Double(command.params?["x"] as? Int ?? 0)
+                let y = (command.params?["y"] as? Double) ?? Double(command.params?["y"] as? Int ?? 0)
+                let duration = command.params?["duration"] as? Double ?? 0.5
+                let point = CGPoint(x: x, y: y)
+                
+                let gestureSimulator = TouchGestureSimulator(webView: controller.webView)
+                try await gestureSimulator.longPress(at: point, duration: duration)
+                result = ["longPressed": true, "x": x, "y": y, "duration": duration]
+
+            case "swipe":
+                let gestureSimulator = TouchGestureSimulator(webView: controller.webView)
+                
+                if let directionStr = command.params?["direction"] as? String,
+                   let direction = SwipeDirection(rawValue: directionStr.lowercased()) {
+                    // Directional swipe
+                    let distance = command.params?["distance"] as? Double ?? 300
+                    let duration = command.params?["duration"] as? Double ?? 0.3
+                    try await gestureSimulator.swipe(direction: direction, distance: CGFloat(distance), duration: duration)
+                    result = ["swiped": true, "direction": directionStr, "distance": distance]
+                } else {
+                    // Coordinate-based swipe
+                    let fromX = command.params?["fromX"] as? Double ?? command.params?["startX"] as? Double ?? 0
+                    let fromY = command.params?["fromY"] as? Double ?? command.params?["startY"] as? Double ?? 0
+                    let toX = command.params?["toX"] as? Double ?? command.params?["endX"] as? Double ?? 0
+                    let toY = command.params?["toY"] as? Double ?? command.params?["endY"] as? Double ?? 0
+                    let duration = command.params?["duration"] as? Double ?? 0.3
+                    
+                    try await gestureSimulator.swipe(
+                        from: CGPoint(x: fromX, y: fromY),
+                        to: CGPoint(x: toX, y: toY),
+                        duration: duration
+                    )
+                    result = ["swiped": true, "from": ["x": fromX, "y": fromY], "to": ["x": toX, "y": toY]]
+                }
+
+            case "pinch":
+                let scale = command.params?["scale"] as? Double ?? 1.5
+                let duration = command.params?["duration"] as? Double ?? 0.3
+                
+                let gestureSimulator = TouchGestureSimulator(webView: controller.webView)
+                try await gestureSimulator.pinch(scale: CGFloat(scale), duration: duration)
+                result = ["pinched": true, "scale": scale]
+
             default:
                 return CommandResponse(id: command.id, success: false, result: nil, error: "Unknown command: \(command.method)")
             }
