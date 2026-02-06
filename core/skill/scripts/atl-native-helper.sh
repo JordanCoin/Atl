@@ -6,6 +6,7 @@
 # Usage: source atl-native-helper.sh
 
 ATL_URL="${ATL_URL:-http://localhost:9222}"
+ATL_NATIVE_URL="${ATL_NATIVE_URL:-http://localhost:9223}"
 
 # ============================================================================
 # Core Helper
@@ -23,6 +24,19 @@ _atl_cmd() {
     -d "{\"id\":\"$(date +%s%N)\",\"method\":\"$method\"$params}"
 }
 
+# Native commands use the UI Test server on port 9223
+_atl_native_cmd() {
+  local method="$1"
+  shift
+  local params=""
+  if [ $# -gt 0 ]; then
+    params=",\"params\":{$*}"
+  fi
+  curl -s -X POST "$ATL_NATIVE_URL/command" \
+    -H "Content-Type: application/json" \
+    -d "{\"id\":\"$(date +%s%N)\",\"method\":\"$method\"$params}"
+}
+
 # ============================================================================
 # Native App Commands
 # ============================================================================
@@ -36,13 +50,13 @@ atl_openapp() {
     echo "Example: atl_openapp com.apple.Preferences" >&2
     return 1
   fi
-  _atl_cmd "openApp" "\"bundleId\":\"$bundle_id\""
+  _atl_native_cmd "openApp" "\"bundleId\":\"$bundle_id\""
 }
 
 # Close the current app (returns to springboard/previous state)
 # Usage: atl_closeapp
 atl_closeapp() {
-  _atl_cmd "closeApp"
+  _atl_native_cmd "closeApp"
 }
 
 # Get accessibility snapshot of current native app UI
@@ -53,7 +67,7 @@ atl_snapshot() {
   if [ "$1" = "--interactive" ] || [ "$1" = "-i" ]; then
     interactive_only="true"
   fi
-  _atl_cmd "snapshot" "\"interactiveOnly\":$interactive_only"
+  _atl_native_cmd "snapshot" "\"interactiveOnly\":$interactive_only"
 }
 
 # Tap an element by its ref (from snapshot)
@@ -65,7 +79,7 @@ atl_tapref() {
     echo "Example: atl_tapref e5" >&2
     return 1
   fi
-  _atl_cmd "tapRef" "\"ref\":\"$ref\""
+  _atl_native_cmd "tapRef" "\"ref\":\"$ref\""
 }
 
 # Semantic find - find element by text and optionally act on it
@@ -94,19 +108,19 @@ atl_find() {
     params="$params,\"value\":\"$value\""
   fi
   
-  _atl_cmd "find" "$params"
+  _atl_native_cmd "find" "$params"
 }
 
 # Show current automation mode (browser or native)
 # Usage: atl_mode
 atl_mode() {
-  _atl_cmd "appState" | jq -r '.result.mode // "unknown"'
+  _atl_native_cmd "appState" | jq -r '.result.mode // "unknown"'
 }
 
 # Get full app state (mode + bundleId if in native mode)
 # Usage: atl_appstate
 atl_appstate() {
-  _atl_cmd "appState"
+  _atl_native_cmd "appState"
 }
 
 # ============================================================================
@@ -131,10 +145,10 @@ atl_goto() {
 }
 
 # ============================================================================
-# Universal Commands (work in both modes)
+# Universal Commands (Browser - port 9222)
 # ============================================================================
 
-# Tap at coordinates
+# Tap at coordinates (browser)
 # Usage: atl_tap 200 300
 atl_tap() {
   local x="$1"
@@ -146,7 +160,7 @@ atl_tap() {
   _atl_cmd "tap" "\"x\":$x,\"y\":$y"
 }
 
-# Swipe in a direction
+# Swipe in a direction (browser)
 # Usage: atl_swipe up|down|left|right [distance]
 atl_swipe() {
   local direction="$1"
@@ -158,12 +172,54 @@ atl_swipe() {
   _atl_cmd "swipe" "\"direction\":\"$direction\",\"distance\":$distance"
 }
 
-# Take screenshot (returns base64 PNG)
+# Take screenshot (browser - returns base64 PNG)
 # Usage: atl_screenshot [output_file]
 atl_screenshot() {
   local outfile="$1"
   local result
   result=$(_atl_cmd "screenshot")
+  
+  if [ -n "$outfile" ]; then
+    echo "$result" | jq -r '.result.data' | base64 -d > "$outfile"
+    echo "$outfile"
+  else
+    echo "$result"
+  fi
+}
+
+# ============================================================================
+# Universal Commands (Native - port 9223)
+# ============================================================================
+
+# Tap at coordinates (native)
+# Usage: atl_native_tap 200 300
+atl_native_tap() {
+  local x="$1"
+  local y="$2"
+  if [ -z "$x" ] || [ -z "$y" ]; then
+    echo "Usage: atl_native_tap <x> <y>" >&2
+    return 1
+  fi
+  _atl_native_cmd "tap" "\"x\":$x,\"y\":$y"
+}
+
+# Swipe in a direction (native)
+# Usage: atl_native_swipe up|down|left|right
+atl_native_swipe() {
+  local direction="$1"
+  if [ -z "$direction" ]; then
+    echo "Usage: atl_native_swipe <up|down|left|right>" >&2
+    return 1
+  fi
+  _atl_native_cmd "swipe" "\"direction\":\"$direction\""
+}
+
+# Take screenshot (native - returns base64 PNG)
+# Usage: atl_native_screenshot [output_file]
+atl_native_screenshot() {
+  local outfile="$1"
+  local result
+  result=$(_atl_native_cmd "screenshot")
   
   if [ -n "$outfile" ]; then
     echo "$result" | jq -r '.result.data' | base64 -d > "$outfile"

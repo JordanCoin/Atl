@@ -23,80 +23,79 @@ metadata:
 
 ATL provides HTTP-based automation for iOS Simulator — both **browser** (mobile Safari) and **native apps**. Think Playwright, but for mobile.
 
-| | |
-|---|---|
-| **Base URL** | `http://localhost:9222` |
-| **API Reference** | [openapi.yaml](../api/openapi.yaml) |
-| **Health Check** | `curl http://localhost:9222/ping` |
+## 🔀 Two Servers: Browser & Native
 
-## 🔀 Two Modes: Browser & Native
+ATL uses **two separate servers** for browser and native app automation:
 
-ATL operates in one of two modes:
-
-| Mode | Use Case | Key Commands |
-|------|----------|--------------|
-| **Browser** (default) | Web automation in mobile Safari | `goto`, `markElements`, `clickMark`, `evaluate` |
-| **Native** | iOS app automation (Settings, Contacts, any app) | `openApp`, `snapshot`, `tapRef`, `find` |
-
-**Mode-agnostic commands** work in both: `tap`, `swipe`, `pinch`, `screenshot`, `longPress`
+| Server | Port | Use Case | Key Commands |
+|--------|------|----------|--------------|
+| **Browser** | `9222` | Web automation in mobile Safari | `goto`, `markElements`, `clickMark`, `evaluate` |
+| **Native** | `9223` | iOS app automation (Settings, Contacts, any app) | `openApp`, `snapshot`, `tapRef`, `find` |
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  BROWSER MODE          ←→          NATIVE MODE             │
-│  (mobile Safari)                   (iOS apps)              │
-│                                                             │
-│  markElements + clickMark    │    snapshot + tapRef        │
-│  CSS selectors               │    accessibility tree       │
-│  DOM evaluation              │    element references       │
+│  BROWSER SERVER (9222)     │     NATIVE SERVER (9223)      │
+│  (mobile Safari/WebView)   │     (iOS apps via XCTest)     │
+│                            │                                │
+│  markElements + clickMark  │     snapshot + tapRef         │
+│  CSS selectors             │     accessibility tree        │
+│  DOM evaluation            │     element references        │
+│  tap, swipe, screenshot    │     tap, swipe, screenshot    │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Mode Switching
+**Why two ports?** Native app automation requires XCTest APIs (XCUIApplication, XCUIElement) which are only available in UI Test bundles. The native server runs as a UI Test that exposes an HTTP API.
+
+### Starting the Servers
 
 ```bash
-# Start in browser mode (default)
-curl -s -X POST http://localhost:9222/command \
-  -d '{"method":"goto","params":{"url":"https://example.com"}}'
+# Browser server (starts automatically with AtlBrowser app)
+xcrun simctl launch booted com.atl.browser
+curl http://localhost:9222/ping  # → {"status":"ok"}
 
-# Switch to native mode (opens Settings app)
-curl -s -X POST http://localhost:9222/command \
-  -d '{"method":"openApp","params":{"bundleId":"com.apple.Preferences"}}'
-
-# Check current mode
-curl -s -X POST http://localhost:9222/command \
-  -d '{"method":"appState"}' | jq '.result'
-# → {"mode":"native","bundleId":"com.apple.Preferences"}
-
-# Switch back to browser mode
-curl -s -X POST http://localhost:9222/command \
-  -d '{"method":"openBrowser"}'
+# Native server (run as UI Test)
+cd ~/Atl/core/AtlBrowser
+xcodebuild test -workspace AtlBrowser.xcworkspace \
+  -scheme AtlBrowser \
+  -destination 'id=<SIMULATOR_UDID>' \
+  -only-testing:AtlBrowserUITests/NativeServer/testNativeServer &
+  
+# Wait for it to start, then:
+curl http://localhost:9223/ping  # → {"status":"ok","mode":"native"}
 ```
 
-**Important:** Commands are mode-specific. Calling `markElements` in native mode or `snapshot` in browser mode returns an error.
+### Quick Port Reference
+
+| Task | Port | Example |
+|------|------|---------|
+| Browse websites | 9222 | `curl localhost:9222/command -d '{"method":"goto",...}'` |
+| Open native app | 9223 | `curl localhost:9223/command -d '{"method":"openApp",...}'` |
+| Screenshot (browser) | 9222 | `curl localhost:9222/command -d '{"method":"screenshot"}'` |
+| Screenshot (native) | 9223 | `curl localhost:9223/command -d '{"method":"screenshot"}'` |
 
 ---
 
-## 📱 Native App Mode
+## 📱 Native App Automation (Port 9223)
 
-Native mode automates **any iOS app** using the accessibility tree — no DOM, no JavaScript, just direct element interaction.
+Native automation uses **port 9223** and automates **any iOS app** using the accessibility tree — no DOM, no JavaScript, just direct element interaction.
 
 ### Opening & Closing Apps
 
 ```bash
 # Open an app by bundle ID
-curl -s -X POST http://localhost:9222/command \
+curl -s -X POST http://localhost:9223/command \
   -d '{"method":"openApp","params":{"bundleId":"com.apple.Preferences"}}'
-# → {"success":true,"result":{"bundleId":"com.apple.Preferences","mode":"native"}}
+# → {"success":true,"result":{"bundleId":"com.apple.Preferences","mode":"native","state":"running"}}
 
 # Check current app state
-curl -s -X POST http://localhost:9222/command \
+curl -s -X POST http://localhost:9223/command \
   -d '{"method":"appState"}'
-# → {"success":true,"result":{"mode":"native","bundleId":"com.apple.Preferences"}}
+# → {"success":true,"result":{"mode":"native","bundleId":"com.apple.Preferences","state":"running"}}
 
-# Close current app (returns to browser mode)
-curl -s -X POST http://localhost:9222/command \
+# Close current app
+curl -s -X POST http://localhost:9223/command \
   -d '{"method":"closeApp"}'
-# → {"success":true}
+# → {"success":true,"result":{"closed":true}}
 ```
 
 ### Common Bundle IDs
@@ -119,7 +118,7 @@ curl -s -X POST http://localhost:9222/command \
 `snapshot` returns the accessibility tree — all visible elements with their properties and tap-able references.
 
 ```bash
-curl -s -X POST http://localhost:9222/command \
+curl -s -X POST http://localhost:9223/command \
   -d '{"method":"snapshot","params":{"interactiveOnly":true}}' | jq '.result'
 ```
 
@@ -181,11 +180,11 @@ Tap an element by its reference from the last `snapshot`:
 
 ```bash
 # Take snapshot first
-curl -s -X POST http://localhost:9222/command \
+curl -s -X POST http://localhost:9223/command \
   -d '{"method":"snapshot","params":{"interactiveOnly":true}}'
 
 # Tap element e0 (Wi-Fi cell from example above)
-curl -s -X POST http://localhost:9222/command \
+curl -s -X POST http://localhost:9223/command \
   -d '{"method":"tapRef","params":{"ref":"e0"}}'
 # → {"success":true}
 ```
@@ -196,21 +195,21 @@ Find and interact with elements by text — no need to parse snapshot manually:
 
 ```bash
 # Find and tap "Wi-Fi"
-curl -s -X POST http://localhost:9222/command \
+curl -s -X POST http://localhost:9223/command \
   -d '{"method":"find","params":{"text":"Wi-Fi","action":"tap"}}'
 # → {"success":true,"result":{"found":true,"ref":"e0"}}
 
 # Check if an element exists
-curl -s -X POST http://localhost:9222/command \
+curl -s -X POST http://localhost:9223/command \
   -d '{"method":"find","params":{"text":"Bluetooth","action":"exists"}}'
 # → {"success":true,"result":{"found":true,"ref":"e1"}}
 
 # Find and fill a text field
-curl -s -X POST http://localhost:9222/command \
+curl -s -X POST http://localhost:9223/command \
   -d '{"method":"find","params":{"text":"First name","action":"fill","value":"John"}}'
 
 # Get element info without interacting
-curl -s -X POST http://localhost:9222/command \
+curl -s -X POST http://localhost:9223/command \
   -d '{"method":"find","params":{"text":"Cancel","action":"get"}}'
 # → {"success":true,"result":{"found":true,"ref":"e5","element":{...}}}
 ```
@@ -229,33 +228,33 @@ Here's a complete flow: open Settings, navigate to Wi-Fi, take a screenshot:
 
 ```bash
 # 1. Open Settings app
-curl -s -X POST http://localhost:9222/command \
+curl -s -X POST http://localhost:9223/command \
   -d '{"method":"openApp","params":{"bundleId":"com.apple.Preferences"}}'
 
 # 2. Wait for app to launch
 sleep 1
 
 # 3. Take snapshot to see available elements
-curl -s -X POST http://localhost:9222/command \
+curl -s -X POST http://localhost:9223/command \
   -d '{"method":"snapshot","params":{"interactiveOnly":true}}' | jq '.result.elements[:5]'
 
 # 4. Find and tap Wi-Fi
-curl -s -X POST http://localhost:9222/command \
+curl -s -X POST http://localhost:9223/command \
   -d '{"method":"find","params":{"text":"Wi-Fi","action":"tap"}}'
 
 # 5. Wait for navigation
 sleep 0.5
 
 # 6. Take screenshot of Wi-Fi settings
-curl -s -X POST http://localhost:9222/command \
+curl -s -X POST http://localhost:9223/command \
   -d '{"method":"screenshot"}' | jq -r '.result.data' | base64 -d > /tmp/wifi-settings.png
 
 # 7. Navigate back (swipe right from left edge)
-curl -s -X POST http://localhost:9222/command \
+curl -s -X POST http://localhost:9223/command \
   -d '{"method":"swipe","params":{"direction":"right"}}'
 
 # 8. Close the app
-curl -s -X POST http://localhost:9222/command \
+curl -s -X POST http://localhost:9223/command \
   -d '{"method":"closeApp"}'
 ```
 
