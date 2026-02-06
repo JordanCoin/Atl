@@ -2,18 +2,21 @@
 
 > The automation layer between AI agents and iOS
 
-Mobile browser automation via iOS Simulator. Built for AI agents — vision-free automation with numbered marks.
+Mobile browser automation via iOS Simulator. Built for AI agents — start with coordinates, escalate to vision only when needed.
 
 ![ATL marks on Target.com](core/docs/marks-example.png)
-*Numbered marks on interactive elements — no vision model needed*
+*Numbered marks give you coordinates — vision API only when stuck*
 
 ## The Pattern
 
 ```
-markElements → getMarkInfo → tap x,y
+markElements → getMarkInfo → tap x,y → screenshot if stuck
 ```
 
-No CSS selectors. No vision API calls. The browser labels everything with numbers + coordinates.
+**Tiered automation:**
+1. **Coordinates first** — marks give you x,y without vision calls (90% of actions)
+2. **Vision fallback** — screenshot when stuck to see modals/blockers
+3. **JS injection** — direct DOM manipulation as last resort
 
 ## Quick Start
 
