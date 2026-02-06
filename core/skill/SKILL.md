@@ -13,7 +13,7 @@ metadata:
         label: "Clone ATL repository"
       - id: "atl-setup"
         kind: "shell" 
-        command: "~/.openclaw/skills/atl-browser/scripts/setup.sh"
+        command: "~/Atl/core/skill/scripts/setup.sh"
         label: "Build and install ATL to simulator"
 ---
 
@@ -142,7 +142,7 @@ When you click "Add to cart" on sites like Target, Amazon, etc., they often:
 
 ```bash
 # 1. Setup (boots sim, installs ATL)
-~/.openclaw/skills/atl-browser/scripts/setup.sh
+~/Atl/core/skill/scripts/setup.sh
 
 # 2. Navigate somewhere
 curl -s -X POST http://localhost:9222/command \
@@ -163,7 +163,7 @@ curl -s -X POST http://localhost:9222/command \
 
 **Or use the helper functions:**
 ```bash
-source ~/.openclaw/skills/atl-browser/scripts/atl-helper.sh
+source ~/Atl/core/skill/scripts/atl-helper.sh
 atl_goto "https://example.com"
 atl_mark
 atl_screenshot /tmp/page.png
