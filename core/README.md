@@ -4,6 +4,9 @@
 
 Fast browser automation via iOS Simulator. Built for AI agents — complete tasks in minimal API calls with a mark-and-click system that doesn't break.
 
+![ATL marks on Target.com](docs/marks-example.png)
+*Numbered marks on interactive elements — no vision model needed to know what to click*
+
 ## Quick Start
 
 ```bash
@@ -133,6 +136,28 @@ The PDF shows numbered labels on every element.
 | `querySelector` | `{selector}` | Get element info |
 | `querySelectorAll` | `{selector}` | Get all matching elements |
 | `waitForSelector` | `{selector}` | Wait for element |
+
+### Touch Gestures
+| Command | Parameters | Description |
+|---------|------------|-------------|
+| `tap` | `{x, y}` | Tap at coordinates |
+| `longPress` | `{x, y, duration?}` | Long press (default 0.5s) |
+| `swipe` | `{direction}` or `{fromX, fromY, toX, toY}` | Swipe up/down/left/right |
+| `pinch` | `{scale}` | Pinch zoom (scale > 1 = zoom in) |
+| `getMarkInfo` | `{label}` | Get element coordinates by label |
+
+**Vision-free coordinate workflow:**
+```bash
+# 1. Mark elements
+curl -X POST http://localhost:9222/command -d '{"method":"markAll"}'
+
+# 2. Get coordinates for element 26
+curl -X POST http://localhost:9222/command -d '{"method":"getMarkInfo","params":{"label":26}}'
+# → {"x":43, "y":539, "width":343, "height":44, "text":"Add to cart"}
+
+# 3. Tap at center of element
+curl -X POST http://localhost:9222/command -d '{"method":"tap","params":{"x":214,"y":561}}'
+```
 
 ## Why PDFs?
 

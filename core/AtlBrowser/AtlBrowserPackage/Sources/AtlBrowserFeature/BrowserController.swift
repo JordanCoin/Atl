@@ -336,8 +336,18 @@ class BrowserController: ObservableObject {
             throw BrowserError.invalidURL
         }
 
-        let request = URLRequest(url: url)
-        webView.load(request)
+        // Use JavaScript navigation - more reliable than webView.load()
+        // webView.load() can silently fail in certain WKWebView configurations
+        let escapedUrl = urlString.replacingOccurrences(of: "\"", with: "\\\"")
+        let script = "window.location.href = \"\(escapedUrl)\"; true;"
+        
+        do {
+            _ = try await evaluateJavaScript(script)
+        } catch {
+            // Fallback to native load if JS fails (e.g., on about:blank)
+            let request = URLRequest(url: url)
+            webView.load(request)
+        }
 
         // Wait for navigation to complete
         _ = await waitForNavigation()

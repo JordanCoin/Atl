@@ -203,6 +203,8 @@ final class CommandServer {
             case "goto":
                 if let url = command.params?["url"] as? String {
                     try await controller.goto(url)
+                    // Return the current URL so caller can verify navigation worked
+                    result = ["url": controller.currentURL?.absoluteString ?? url]
                 }
 
             case "reload":
