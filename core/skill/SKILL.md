@@ -23,6 +23,12 @@ metadata:
 
 ATL provides HTTP-based browser automation for iOS Simulator. Think Playwright, but for mobile Safari.
 
+| | |
+|---|---|
+| **Base URL** | `http://localhost:9222` |
+| **API Reference** | [openapi.yaml](../api/openapi.yaml) |
+| **Health Check** | `curl http://localhost:9222/ping` |
+
 ## 💡 Core Insight: Vision-Free Automation
 
 ATL's killer feature is **spatial understanding without vision models**:
