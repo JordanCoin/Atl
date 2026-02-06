@@ -1,0 +1,16 @@
+{
+  "id": "atl-browser",
+  "name": "ATL — Agent Touch Layer",
+  "description": "The automation layer between AI agents and iOS Safari.",
+  "longDescription": "ATL (Agent Touch Layer) provides HTTP-based browser automation for iOS Simulator. Navigate, click, screenshot, and automate web tasks on iPhone/iPad simulators. Features a mark-and-click system for visual element targeting — no brittle CSS selectors, just numbered labels that AI agents love.",
+  "category": "Productivity",
+  "price": 0,
+  "icon": "📱",
+  "author": "JordanCoin",
+  "authorUrl": "https://github.com/JordanCoin",
+  "repository": "https://github.com/JordanCoin/Atl",
+  "version": "1.1.0",
+  "tags": ["mobile", "browser", "automation", "ios", "simulator", "safari", "testing", "ai-agent", "playwright"],
+  "requirements": ["macOS with Xcode", "iOS Simulator", "xcrun CLI tools"],
+  "optional": ["Python 3.10+", "OpenAI API key (for AI agent)"]
+}
