@@ -6,7 +6,7 @@ struct ATL: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "atl",
         abstract: "ATL - Agent Touch Layer CLI",
-        version: "0.1.0",
+        version: "0.2.0",
         subcommands: [
             Goto.self,
             Click.self,
@@ -19,6 +19,9 @@ struct ATL: ParsableCommand {
             State.self,
             Ping.self,
             Debug.self,
+            Reset.self,
+            Reload.self,
+            Back.self,
         ],
         defaultSubcommand: Ping.self
     )
@@ -75,15 +78,27 @@ struct Debug: ParsableCommand {
     }
 }
 
+// MARK: - Global Options
+
+struct GlobalOptions: ParsableArguments {
+    @Flag(name: .long, help: "Output errors as JSON for agent consumption")
+    var json: Bool = false
+    
+    @Option(name: .shortAndLong, help: "Server port")
+    var port: Int = 9222
+}
+
 // MARK: - API Client
 
 struct ATLClient {
     let host: String
     let port: Int
+    let jsonOutput: Bool
     
-    init(host: String = "localhost", port: Int = 9222) {
+    init(host: String = "localhost", port: Int = 9222, jsonOutput: Bool = false) {
         self.host = host
         self.port = port
+        self.jsonOutput = jsonOutput
     }
     
     func call(_ method: String, params: [String: Any] = [:], verbose: Bool = false) throws -> [String: Any] {
@@ -288,14 +303,67 @@ struct Goto: ParsableCommand {
     @Argument(help: "URL to navigate to")
     var url: String
     
-    @Option(name: .shortAndLong, help: "Server port")
-    var port: Int = 9222
+    @OptionGroup var options: GlobalOptions
+    
+    @Flag(name: .shortAndLong, help: "Wait for DOM stable after navigation")
+    var wait: Bool = false
     
     func run() throws {
-        let client = ATLClient(port: port)
-        let result = try client.call("goto", params: ["url": url])
-        print("→ \(result["url"] ?? url)")
+        let client = ATLClient(port: options.port, jsonOutput: options.json)
+        
+        do {
+            let result = try client.call("goto", params: ["url": url])
+            
+            if wait {
+                let waitResult = try client.call("waitForDOMStable", params: ["stabilityMs": 1500, "timeoutMs": 15000])
+                let stable = waitResult["stable"] as? Bool ?? false
+                if options.json {
+                    print(encodeJSON(["success": true, "url": result["url"], "stable": stable]))
+                } else {
+                    print("→ \(result["url"] ?? url)")
+                    print(stable ? "✓ DOM stable" : "⚠ Timeout waiting for DOM")
+                }
+            } else {
+                if options.json {
+                    print(encodeJSON(["success": true, "url": result["url"]]))
+                } else {
+                    print("→ \(result["url"] ?? url)")
+                }
+            }
+        } catch {
+            outputError(error, json: options.json)
+            throw ExitCode.failure
+        }
     }
+}
+
+// Helper to output errors in JSON or human format
+func outputError(_ error: Error, json: Bool) {
+    if json {
+        if let atlError = error as? ATLError {
+            fputs(atlError.jsonOutput + "\n", stderr)
+        } else {
+            let dict: [String: Any] = [
+                "success": false,
+                "error": error.localizedDescription,
+                "errorType": "unknown",
+                "recoverable": false,
+                "suggestion": "Check the error message for details"
+            ]
+            fputs(encodeJSON(dict) + "\n", stderr)
+        }
+    } else {
+        fputs("Error: \(error.localizedDescription)\n", stderr)
+    }
+}
+
+func encodeJSON(_ dict: [String: Any?]) -> String {
+    let cleanDict = dict.compactMapValues { $0 }
+    if let data = try? JSONSerialization.data(withJSONObject: cleanDict, options: []),
+       let str = String(data: data, encoding: .utf8) {
+        return str
+    }
+    return "{}"
 }
 
 struct Click: ParsableCommand {
@@ -367,41 +435,64 @@ struct Snapshot: ParsableCommand {
     @Flag(name: .shortAndLong, help: "Show full marks (not truncated)")
     var full: Bool = false
     
-    @Option(name: .long, help: "Server port")
-    var port: Int = 9222
+    @OptionGroup var options: GlobalOptions
     
     func run() throws {
-        let client = ATLClient(port: port)
-        let includePdf = pdf || output != nil
-        let result = try client.call("agentSnapshot", params: ["pdf": includePdf])
+        let client = ATLClient(port: options.port, jsonOutput: options.json)
         
-        // Debug: print all keys
-        // print("DEBUG keys: \(result.keys.joined(separator: ", "))")
-        
-        print("URL: \(result["url"] ?? "?")")
-        print("Title: \(result["title"] ?? "?")")
-        print("Marks: \(result["markCount"] ?? 0)")
-        print()
-        
-        if let marks = result["marks"] as? String {
-            let lines = marks.split(separator: "\n")
-            if full {
-                print(marks)
+        do {
+            let includePdf = pdf || output != nil
+            let result = try client.call("agentSnapshot", params: ["pdf": includePdf])
+            
+            // Save PDF if output path specified
+            if let output = output, let pdfData = result["pdf"] as? String {
+                if let data = Data(base64Encoded: pdfData) {
+                    try data.write(to: URL(fileURLWithPath: output))
+                }
+            }
+            
+            if options.json {
+                // JSON output - include everything an agent needs
+                var jsonResult: [String: Any] = [
+                    "success": true,
+                    "url": result["url"] ?? "",
+                    "title": result["title"] ?? "",
+                    "markCount": result["markCount"] ?? 0,
+                    "marks": result["marks"] ?? "",
+                    "text": result["text"] ?? ""
+                ]
+                if let output = output {
+                    jsonResult["pdfSaved"] = output
+                }
+                print(encodeJSON(jsonResult))
             } else {
-                for line in lines.prefix(20) {
-                    print(line)
+                // Human-readable output
+                print("URL: \(result["url"] ?? "?")")
+                print("Title: \(result["title"] ?? "?")")
+                print("Marks: \(result["markCount"] ?? 0)")
+                print()
+                
+                if let marks = result["marks"] as? String {
+                    let lines = marks.split(separator: "\n")
+                    if full {
+                        print(marks)
+                    } else {
+                        for line in lines.prefix(20) {
+                            print(line)
+                        }
+                        if lines.count > 20 {
+                            print("... (\(lines.count - 20) more, use --full to see all)")
+                        }
+                    }
                 }
-                if lines.count > 20 {
-                    print("... (\(lines.count - 20) more, use --full to see all)")
+                
+                if let output = output {
+                    print("\n✓ PDF saved: \(output)")
                 }
             }
-        }
-        
-        if let output = output, let pdfData = result["pdf"] as? String {
-            if let data = Data(base64Encoded: pdfData) {
-                try data.write(to: URL(fileURLWithPath: output))
-                print("\n✓ PDF saved: \(output) (\(data.count) bytes)")
-            }
+        } catch {
+            outputError(error, json: options.json)
+            throw ExitCode.failure
         }
     }
 }
@@ -491,19 +582,94 @@ struct PDF: ParsableCommand {
 }
 
 struct Wait: ParsableCommand {
-    static let configuration = CommandConfiguration(abstract: "Wait for DOM to stabilize")
+    static let configuration = CommandConfiguration(abstract: "Wait for DOM to stabilize or for specific content")
     
-    @Argument(help: "Stability time in ms (default: 1000)")
-    var ms: Int = 1000
+    @Argument(help: "Stability time in ms (default: 500)")
+    var ms: Int = 500  // Lowered from 1000 per Playwright guidance
     
     @Option(name: .shortAndLong, help: "Server port")
     var port: Int = 9222
     
+    @Option(name: .long, help: "Maximum time to wait (ms)")
+    var timeout: Int = 10000
+    
+    @Option(name: .long, help: "Wait for text to appear on page")
+    var forText: String?
+    
+    @Option(name: .long, help: "Wait for text to disappear from page")
+    var untilGone: String?
+    
+    @Option(name: .long, help: "Wait for CSS selector to appear")
+    var forSelector: String?
+    
+    @Option(name: .long, help: "Wait for network requests to settle (quiet time in ms)")
+    var network: Int?
+    
     func run() throws {
         let client = ATLClient(port: port)
-        let result = try client.call("waitForDOMStable", params: ["stabilityMs": ms])
+        
+        // Wait for specific CSS selector to appear (most reliable for SPAs)
+        if let selector = forSelector {
+            do {
+                // Server throws on timeout, returns empty on success
+                _ = try client.call("waitForSelector", params: [
+                    "selector": selector,
+                    "timeout": Double(timeout) / 1000.0  // Convert ms to seconds
+                ])
+                print("✓ Found: \(selector)")
+            } catch {
+                print("✗ Timeout waiting for: \(selector)")
+                throw ExitCode.failure
+            }
+            return
+        }
+        
+        // Wait for specific text to appear
+        if let text = forText {
+            let startTime = Date()
+            while Date().timeIntervalSince(startTime) * 1000 < Double(timeout) {
+                let result = try client.call("agentSnapshot", params: ["pdf": false])
+                if let pageText = result["text"] as? String,
+                   pageText.localizedCaseInsensitiveContains(text) {
+                    print("✓ Found: \"\(text)\"")
+                    return
+                }
+                Thread.sleep(forTimeInterval: 0.3)
+            }
+            print("✗ Timeout waiting for: \"\(text)\"")
+            throw ExitCode.failure
+        }
+        
+        // Wait for text to disappear
+        if let text = untilGone {
+            let startTime = Date()
+            while Date().timeIntervalSince(startTime) * 1000 < Double(timeout) {
+                let result = try client.call("agentSnapshot", params: ["pdf": false])
+                if let pageText = result["text"] as? String,
+                   !pageText.localizedCaseInsensitiveContains(text) {
+                    print("✓ Gone: \"\(text)\"")
+                    return
+                }
+                Thread.sleep(forTimeInterval: 0.3)
+            }
+            print("✗ Timeout waiting for \"\(text)\" to disappear")
+            throw ExitCode.failure
+        }
+        
+        // Wait for network to settle
+        if let networkMs = network {
+            let result = try client.call("waitForNetworkIdle", params: ["quietMs": networkMs, "timeoutMs": timeout])
+            let idle = result["idle"] as? Bool ?? false
+            print(idle ? "✓ Network idle" : "⚠ Network still active")
+            if !idle { throw ExitCode.failure }
+            return
+        }
+        
+        // Default: wait for DOM stability
+        let result = try client.call("waitForDOMStable", params: ["stabilityMs": ms, "timeoutMs": timeout])
         let stable = result["stable"] as? Bool ?? false
         print(stable ? "✓ DOM stable" : "⚠ Timeout waiting for DOM")
+        if !stable { throw ExitCode.failure }
     }
 }
 
@@ -521,5 +687,91 @@ struct State: ParsableCommand {
         print("Mutations: \(result["mutationCount"] ?? 0)")
         print("Network requests: \(result["networkCount"] ?? 0)")
         print("Errors: \(result["errorCount"] ?? 0)")
+    }
+}
+
+// MARK: - Navigation Commands
+
+struct Reset: ParsableCommand {
+    static let configuration = CommandConfiguration(abstract: "Reset browser to blank page (about:blank)")
+    
+    @Option(name: .shortAndLong, help: "Server port")
+    var port: Int = 9222
+    
+    @Flag(name: .long, help: "Clear cookies")
+    var clearCookies: Bool = false
+    
+    @Option(name: .long, help: "URL to reset to (default: about:blank)")
+    var url: String = "about:blank"
+    
+    func run() throws {
+        let client = ATLClient(port: port)
+        
+        if clearCookies {
+            _ = try? client.call("deleteCookies", params: [:])
+            print("✓ Cleared cookies")
+        }
+        
+        // Navigate to target URL
+        _ = try client.call("goto", params: ["url": url])
+        
+        // Clear ATL state
+        _ = try client.call("clearATLState", params: [:])
+        
+        if url == "about:blank" {
+            print("✓ Browser reset to blank page")
+        } else {
+            print("✓ Browser reset to: \(url)")
+        }
+    }
+}
+
+struct Reload: ParsableCommand {
+    static let configuration = CommandConfiguration(abstract: "Reload current page")
+    
+    @Option(name: .shortAndLong, help: "Server port")
+    var port: Int = 9222
+    
+    @Flag(name: .long, help: "Hard reload (bypass cache)")
+    var hard: Bool = false
+    
+    @Flag(name: .shortAndLong, help: "Wait for DOM stable after reload")
+    var wait: Bool = false
+    
+    func run() throws {
+        let client = ATLClient(port: port)
+        
+        _ = try client.call("reload", params: ["bypassCache": hard])
+        print("↻ Page reloaded\(hard ? " (cache bypassed)" : "")")
+        
+        if wait {
+            // Wait for page to stabilize
+            let result = try client.call("waitForDOMStable", params: ["stabilityMs": 1500, "timeoutMs": 10000])
+            let stable = result["stable"] as? Bool ?? false
+            print(stable ? "✓ DOM stable" : "⚠ Timeout waiting for DOM")
+        }
+    }
+}
+
+struct Back: ParsableCommand {
+    static let configuration = CommandConfiguration(abstract: "Go back in browser history")
+    
+    @Option(name: .shortAndLong, help: "Server port")
+    var port: Int = 9222
+    
+    @Flag(name: .shortAndLong, help: "Wait for DOM stable after navigation")
+    var wait: Bool = false
+    
+    func run() throws {
+        let client = ATLClient(port: port)
+        
+        _ = try client.call("goBack", params: [:])
+        print("← Back")
+        
+        if wait {
+            let result = try client.call("waitForDOMStable", params: ["stabilityMs": 1000, "timeoutMs": 8000])
+            let stable = result["stable"] as? Bool ?? false
+            print(stable ? "✓ DOM stable" : "⚠ Timeout waiting for DOM")
+        }
     }
 }

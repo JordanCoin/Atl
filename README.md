@@ -33,6 +33,26 @@ cd Atl/core
 # API ready at http://localhost:9222
 ```
 
+## CLI
+
+Swift CLI for agent-friendly automation:
+
+```bash
+cd core/cli && swift build -c release
+.build/release/atl ping                    # Check server
+.build/release/atl goto https://target.com # Navigate
+.build/release/atl wait --for-selector ".product-grid"  # Wait for element (SPA-safe)
+.build/release/atl snapshot                # Get marks + text
+.build/release/atl click "Add to cart"     # Click by text
+.build/release/atl pdf -o cart.pdf         # Capture PDF
+```
+
+**Wait strategies** (for SPAs like Target, Amazon):
+- `--for-selector` — Wait for CSS selector (most reliable)
+- `--for-text` — Wait for text to appear
+- `--network 500` — Wait for network idle (500ms quiet)
+- Default: DOM stability (500ms no mutations)
+
 ## Example
 
 ### Browser Automation

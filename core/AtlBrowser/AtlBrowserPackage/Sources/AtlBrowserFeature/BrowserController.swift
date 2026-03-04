@@ -1812,6 +1812,41 @@ class BrowserController: ObservableObject {
         return false
     }
     
+    /// Wait for network requests to settle (no pending requests for specified duration)
+    func waitForNetworkIdle(quietMs: Int = 500, timeout: TimeInterval = 10) async throws -> Bool {
+        let startTime = Date()
+        
+        while Date().timeIntervalSince(startTime) < timeout {
+            let script = """
+            (function() {
+                if (!window.__atl) return { idle: true, pending: 0 };
+                const now = Date.now();
+                const pendingRequests = window.__atl.networkRequests.filter(r => !r.completed);
+                const lastCompleted = window.__atl.networkRequests
+                    .filter(r => r.completed)
+                    .map(r => r.completedAt || 0)
+                    .reduce((a, b) => Math.max(a, b), 0);
+                const msSinceLastComplete = now - lastCompleted;
+                return {
+                    idle: pendingRequests.length === 0 && msSinceLastComplete >= \(quietMs),
+                    pending: pendingRequests.length,
+                    msSinceLastComplete: msSinceLastComplete
+                };
+            })();
+            """
+            
+            if let result = try? await evaluateJavaScript(script) as? [String: Any],
+               let idle = result["idle"] as? Bool,
+               idle {
+                return true
+            }
+            
+            try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+        }
+        
+        return false
+    }
+    
     // MARK: - Progressive Element Discovery (Phase 1)
     
     /// Discover ALL elements by scrolling through the entire page

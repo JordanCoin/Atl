@@ -907,6 +907,12 @@ final class CommandServer {
                 let stable = try await controller.waitForDOMStable(stabilityMs: stabilityMs, timeout: timeout)
                 result = ["stable": stable, "stabilityMs": stabilityMs]
             
+            case "waitForNetworkIdle":
+                let quietMs = command.params?["quietMs"] as? Int ?? 500
+                let timeout = command.params?["timeoutMs"] as? TimeInterval ?? 10000
+                let idle = try await controller.waitForNetworkIdle(quietMs: quietMs, timeout: timeout / 1000)
+                result = ["idle": idle, "quietMs": quietMs]
+            
             case "discoverAll":
                 let elements = try await controller.discoverAllElements()
                 result = ["elements": elements, "count": elements.count]
