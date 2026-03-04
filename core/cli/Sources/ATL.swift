@@ -18,9 +18,61 @@ struct ATL: ParsableCommand {
             Wait.self,
             State.self,
             Ping.self,
+            Debug.self,
         ],
         defaultSubcommand: Ping.self
     )
+}
+
+// Debug command to trace issues
+struct Debug: ParsableCommand {
+    static let configuration = CommandConfiguration(abstract: "Debug connection and raw API calls")
+    
+    @Argument(help: "Method to call")
+    var method: String = "ping"
+    
+    @Option(name: .long, help: "JSON params (e.g. '{\"url\":\"https://example.com\"}')")
+    var params: String = "{}"
+    
+    @Option(name: .long, help: "Server port")
+    var port: Int = 9222
+    
+    func run() throws {
+        print("=== ATL Debug ===")
+        print("Port: \(port)")
+        print("Method: \(method)")
+        print("Params: \(params)")
+        print()
+        
+        // Parse params
+        guard let paramsData = params.data(using: .utf8),
+              let paramsDict = try? JSONSerialization.jsonObject(with: paramsData) as? [String: Any] else {
+            print("ERROR: Invalid JSON params")
+            throw ExitCode.failure
+        }
+        
+        let client = ATLClient(port: port)
+        do {
+            let result = try client.call(method, params: paramsDict, verbose: true)
+            print()
+            print("=== Result ===")
+            if let jsonData = try? JSONSerialization.data(withJSONObject: result, options: .prettyPrinted),
+               let jsonStr = String(data: jsonData, encoding: .utf8) {
+                print(jsonStr)
+            } else {
+                print(result)
+            }
+        } catch {
+            print()
+            print("=== Error ===")
+            if let atlError = error as? ATLError {
+                print(atlError.jsonOutput)
+            } else {
+                print("Error: \(error.localizedDescription)")
+            }
+            throw ExitCode.failure
+        }
+    }
 }
 
 // MARK: - API Client
@@ -34,11 +86,13 @@ struct ATLClient {
         self.port = port
     }
     
-    func call(_ method: String, params: [String: Any] = [:]) throws -> [String: Any] {
-        let url = URL(string: "http://127.0.0.1:\(port)/command")!
+    func call(_ method: String, params: [String: Any] = [:], verbose: Bool = false) throws -> [String: Any] {
+        let url = URL(string: "http://localhost:\(port)/command")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("close", forHTTPHeaderField: "Connection")
         
         let command: [String: Any] = [
             "id": "cli-\(Int(Date().timeIntervalSince1970))",
@@ -46,19 +100,44 @@ struct ATLClient {
             "params": params
         ]
         
-        request.httpBody = try JSONSerialization.data(withJSONObject: command)
-        // print("DEBUG sending: \(String(data: request.httpBody!, encoding: .utf8) ?? "?")")
+        let bodyData = try JSONSerialization.data(withJSONObject: command, options: [])
+        request.httpBody = bodyData
+        request.setValue("\(bodyData.count)", forHTTPHeaderField: "Content-Length")
+        
+        if verbose {
+            fputs("[DEBUG] URL: \(url)\n", stderr)
+            fputs("[DEBUG] Body: \(String(data: bodyData, encoding: .utf8) ?? "nil")\n", stderr)
+            fputs("[DEBUG] Body length: \(bodyData.count)\n", stderr)
+            fputs("[DEBUG] Headers: \(request.allHTTPHeaderFields ?? [:])\n", stderr)
+        }
         
         let semaphore = DispatchSemaphore(value: 0)
         var result: [String: Any]?
         var error: Error?
         
-        let task = URLSession.shared.dataTask(with: request) { data, response, err in
+        // Use ephemeral session to avoid any caching/cookie issues
+        let config = URLSessionConfiguration.ephemeral
+        config.httpShouldSetCookies = false
+        config.httpCookieAcceptPolicy = .never
+        let session = URLSession(configuration: config)
+        
+        let task = session.dataTask(with: request) { data, response, err in
             defer { semaphore.signal() }
             
             if let err = err {
-                error = err
+                error = ATLError.connectionFailed(err.localizedDescription)
                 return
+            }
+            
+            if let httpResponse = response as? HTTPURLResponse {
+                if verbose {
+                    fputs("[DEBUG] HTTP Status: \(httpResponse.statusCode)\n", stderr)
+                }
+                if httpResponse.statusCode != 200 {
+                    let body = data.flatMap { String(data: $0, encoding: .utf8) } ?? "no body"
+                    error = ATLError.serverError(httpResponse.statusCode, body)
+                    return
+                }
             }
             
             guard let data = data else {
@@ -66,12 +145,18 @@ struct ATLClient {
                 return
             }
             
+            if verbose {
+                fputs("[DEBUG] Response: \(String(data: data, encoding: .utf8)?.prefix(500) ?? "nil")\n", stderr)
+            }
+            
             do {
                 if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
                     result = json
+                } else {
+                    error = ATLError.parseError("Response is not a JSON object")
                 }
             } catch let e {
-                error = e
+                error = ATLError.parseError(e.localizedDescription)
             }
         }
         
@@ -97,12 +182,69 @@ struct ATLClient {
 
 enum ATLError: Error, LocalizedError {
     case noData
+    case connectionFailed(String)
+    case serverError(Int, String)
     case apiError(String)
+    case parseError(String)
+    case timeout
     
     var errorDescription: String? {
         switch self {
-        case .noData: return "No data received from server"
-        case .apiError(let msg): return msg
+        case .noData: 
+            return "No data received from server. Is ATL running? Try: atl ping"
+        case .connectionFailed(let msg): 
+            return "Connection failed: \(msg). Check if ATL server is running on the correct port."
+        case .serverError(let code, let msg): 
+            return "Server error (\(code)): \(msg)"
+        case .apiError(let msg): 
+            return "API error: \(msg)"
+        case .parseError(let msg): 
+            return "Failed to parse response: \(msg)"
+        case .timeout: 
+            return "Request timed out. The page might still be loading."
+        }
+    }
+    
+    var jsonOutput: String {
+        let dict: [String: Any] = [
+            "success": false,
+            "error": errorDescription ?? "Unknown error",
+            "errorType": String(describing: self).components(separatedBy: "(").first ?? "unknown",
+            "recoverable": isRecoverable,
+            "suggestion": recoverySuggestion
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: dict, options: .prettyPrinted),
+           let str = String(data: data, encoding: .utf8) {
+            return str
+        }
+        return "{\"error\": \"Failed to serialize error\"}"
+    }
+    
+    var isRecoverable: Bool {
+        switch self {
+        case .timeout, .apiError: return true
+        case .noData, .connectionFailed: return false
+        case .serverError(let code, _): return code >= 500
+        case .parseError: return false
+        }
+    }
+    
+    var recoverySuggestion: String {
+        switch self {
+        case .noData, .connectionFailed:
+            return "Start ATL server: open AtlBrowser app in iOS Simulator"
+        case .serverError(let code, _) where code >= 500:
+            return "Retry the command"
+        case .apiError(let msg) where msg.contains("not found"):
+            return "Element not found. Try: atl snapshot to see available elements"
+        case .apiError:
+            return "Check command parameters"
+        case .parseError:
+            return "This may be a bug in ATL. Report the full error output."
+        case .timeout:
+            return "Use 'atl wait' before retrying, or increase timeout"
+        default:
+            return "See ATL documentation"
         }
     }
 }
