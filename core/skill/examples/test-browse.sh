@@ -7,7 +7,7 @@ OUTDIR="${1:-.}"
 
 echo "Checking ATL..."
 if ! curl -s "$ATL_URL/ping" | jq -e '.status == "ok"' >/dev/null 2>&1; then
-  echo "ATL not running. Start with: cd /path/to/Atl/core && ./bin/atl start"
+  echo "ATL not running. Start with: cd /path/to/Atl/core && ./bin/atl-sim start"
   exit 1
 fi
 echo "ATL OK"

@@ -12,7 +12,7 @@ Fast browser and native app automation via iOS Simulator. Built for AI agents â€
 ```bash
 git clone https://github.com/JordanCoin/Atl.git
 cd atl
-./bin/atl start
+./bin/atl-sim start
 ```
 
 API ready at `http://localhost:9222`.
@@ -270,9 +270,9 @@ No App Store downloads needed â€” use these system apps:
 ## CLI
 
 ```bash
-./bin/atl start   # Boot simulator, start server
-./bin/atl stop    # Stop the app
-./bin/atl status  # Check if running
+./bin/atl-sim start   # Boot simulator, start server
+./bin/atl-sim stop    # Stop the app
+./bin/atl-sim status  # Check if running
 
 ./bin/cart <merchant> [search]  # Run cart flow
 ```

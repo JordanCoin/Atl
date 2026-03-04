@@ -1,5 +1,6 @@
 import Foundation
-import Network
+import FlyingFox
+import FlyingSocks
 
 // MARK: - Automation Mode
 
@@ -73,14 +74,14 @@ struct FindResult {
 final class CommandServer {
     private let port: UInt16
     private weak var controller: BrowserController?
-    private var listener: NWListener?
-    
+    private var serverTask: Task<Void, Never>?
+
     // MARK: - Native App Support
     //
     // NOTE: Native app automation runs on a SEPARATE server (port 9223) via UI Tests.
     // This browser server (port 9222) handles web automation only.
     // See: AtlBrowserUITests/NativeServer.swift for native app support.
-    
+
     /// Current automation mode - browser only on this server
     private(set) var mode: AutomationMode = .browser
 
@@ -90,180 +91,73 @@ final class CommandServer {
     }
 
     func start() {
-        do {
-            guard let nwPort = NWEndpoint.Port(rawValue: port) else {
-                print("[CommandServer] Invalid port: \(port)")
-                return
-            }
+        let server = HTTPServer(address: .loopback(port: port))
+        let serverPort = port
 
-            let parameters = NWParameters.tcp
-            parameters.allowLocalEndpointReuse = true
+        // Capture self as nonisolated(unsafe) to satisfy Sendable requirements.
+        // Safety: the route handlers immediately hop to MainActor via `await` before
+        // accessing any mutable state, and self is checked for nil.
+        nonisolated(unsafe) weak var weakSelf = self
 
-            // Security: this HTTP command server is unauthenticated, so we must avoid binding to
-            // all interfaces by default. Bind to loopback on real devices.
-            //
-            // Note: simulator networking can be quirky across iOS versions; if you *need* to reach
-            // the listener from the host machine, you may have to relax this (or add auth + firewall).
-#if !targetEnvironment(simulator)
-            if let loopback = IPv4Address("127.0.0.1") {
-                parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(loopback), port: nwPort)
-            }
-#endif
-
-            listener = try NWListener(using: parameters, on: nwPort)
-
-            let serverPort = port
-            listener?.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    print("[CommandServer] Listening on port \(serverPort)")
-                case .failed(let error):
-                    print("[CommandServer] Failed to start: \(error)")
-                default:
-                    break
+        serverTask = Task.detached {
+            do {
+                await server.appendRoute("GET /ping") { _ in
+                    let body = Data("{\"status\":\"ok\"}".utf8)
+                    return HTTPResponse(
+                        statusCode: .ok,
+                        headers: [.contentType: "application/json"],
+                        body: body
+                    )
                 }
-            }
 
-            listener?.newConnectionHandler = { [weak self] connection in
-                Task { @MainActor in
-                    self?.handleConnection(connection)
+                await server.appendRoute("POST /command") { request in
+                    guard let server = weakSelf else {
+                        return HTTPResponse(
+                            statusCode: .internalServerError,
+                            headers: [.contentType: "application/json"],
+                            body: Data("{\"error\":\"Server shutting down\"}".utf8)
+                        )
+                    }
+                    return await server.handleCommand(request)
                 }
-            }
 
-            listener?.start(queue: .main)
-        } catch {
-            print("[CommandServer] Error starting server: \(error)")
+                print("[CommandServer] Listening on port \(serverPort)")
+                try await server.run()
+            } catch {
+                print("[CommandServer] Error: \(error)")
+            }
         }
     }
 
     func stop() {
-        listener?.cancel()
-        listener = nil
+        serverTask?.cancel()
+        serverTask = nil
     }
 
-    private func handleConnection(_ connection: NWConnection) {
-        connection.stateUpdateHandler = { [weak self] state in
-            switch state {
-            case .ready:
-                Task { @MainActor in
-                    self?.receiveRequest(connection)
-                }
-            case .failed(let error):
-                print("[CommandServer] Connection failed: \(error)")
-            default:
-                break
-            }
-        }
-
-        connection.start(queue: .main)
-    }
-
-    private func receiveRequest(_ connection: NWConnection) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
-            Task { @MainActor in
-                if let data = data, !data.isEmpty {
-                    // Handle the request - it will manage connection lifecycle via sendResponse
-                    self?.handleRequest(data, connection: connection)
-                } else if isComplete || error != nil {
-                    // Only cancel if no data and connection is complete or errored
-                    connection.cancel()
-                } else {
-                    // Continue receiving more data
-                    self?.receiveRequest(connection)
-                }
-            }
-        }
-    }
-
-    private func handleRequest(_ data: Data, connection: NWConnection) {
-        guard let requestString = String(data: data, encoding: .utf8) else {
-            sendErrorResponse(connection, message: "Invalid request")
-            return
-        }
-
-        // Parse HTTP request
-        let lines = requestString.components(separatedBy: "\r\n")
-        guard let requestLine = lines.first else {
-            sendErrorResponse(connection, message: "Empty request")
-            return
-        }
-
-        let parts = requestLine.split(separator: " ")
-        guard parts.count >= 2 else {
-            sendErrorResponse(connection, message: "Invalid request line")
-            return
-        }
-
-        let method = String(parts[0])
-        let path = String(parts[1])
-
-        // Find body (after empty line)
-        var body: Data?
-        if let emptyLineIndex = lines.firstIndex(of: "") {
-            let bodyStart = emptyLineIndex + 1
-            if bodyStart < lines.count {
-                let bodyString = lines[bodyStart...].joined(separator: "\r\n")
-                body = bodyString.data(using: .utf8)
-            }
-        }
-
-        // Route request
-        if path == "/ping" && method == "GET" {
-            handlePing(connection)
-        } else if path == "/command" && method == "POST" {
-            // Validate Content-Type for POST requests
-            let hasJsonContentType = lines.contains { line in
-                line.lowercased().hasPrefix("content-type:") &&
-                line.lowercased().contains("application/json")
-            }
-            if !hasJsonContentType && body != nil {
-                sendErrorResponse(connection, message: "Content-Type must be application/json")
-                return
-            }
-            handleCommand(body, connection: connection)
-        } else {
-            sendErrorResponse(connection, message: "Not found")
-        }
-    }
-
-    private func handlePing(_ connection: NWConnection) {
-        let body = "{\"status\":\"ok\"}"
-        var response = "HTTP/1.1 200 OK\r\n"
-        response += "Content-Type: application/json\r\n"
-        response += "Content-Length: \(body.count)\r\n"
-        response += "Connection: close\r\n"
-        response += "\r\n"
-        response += body
-
-        sendResponse(connection, data: Data(response.utf8))
-    }
-
-    private func handleCommand(_ body: Data?, connection: NWConnection) {
-        guard let body = body,
+    private func handleCommand(_ request: HTTPRequest) async -> HTTPResponse {
+        guard let body = try? await request.bodyData,
               let command = try? JSONDecoder().decode(Command.self, from: body) else {
-            sendErrorResponse(connection, message: "Invalid command")
-            return
+            return HTTPResponse(
+                statusCode: .badRequest,
+                headers: [.contentType: "application/json"],
+                body: Data("{\"error\":\"Invalid command\"}".utf8)
+            )
         }
 
-        Task { @MainActor in
-            let response = await executeCommand(command)
-            guard let responseData = try? JSONEncoder().encode(response) else {
-                self.sendErrorResponse(connection, message: "Failed to encode response")
-                return
-            }
-
-            // Build HTTP response with proper CRLF line endings
-            var httpResponse = "HTTP/1.1 200 OK\r\n"
-            httpResponse += "Content-Type: application/json\r\n"
-            httpResponse += "Content-Length: \(responseData.count)\r\n"
-            httpResponse += "Connection: close\r\n"
-            httpResponse += "\r\n"
-
-            var fullResponse = Data(httpResponse.utf8)
-            fullResponse.append(responseData)
-
-            self.sendResponse(connection, data: fullResponse)
+        let response = await executeCommand(command)
+        guard let responseData = try? JSONEncoder().encode(response) else {
+            return HTTPResponse(
+                statusCode: .internalServerError,
+                headers: [.contentType: "application/json"],
+                body: Data("{\"error\":\"Failed to encode response\"}".utf8)
+            )
         }
+
+        return HTTPResponse(
+            statusCode: .ok,
+            headers: [.contentType: "application/json"],
+            body: responseData
+        )
     }
 
     private func executeCommand(_ command: Command) async -> CommandResponse {
@@ -1011,31 +905,6 @@ final class CommandServer {
         }
     }
 
-    private func sendResponse(_ connection: NWConnection, data: Data) {
-        // Send the response with finalMessage context to signal end of data
-        connection.send(content: data, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { error in
-            if let error = error {
-                print("[CommandServer] Send error: \(error)")
-            }
-            // Wait for TCP to actually transmit the data before closing
-            // contentProcessed means queued, not transmitted
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                connection.cancel()
-            }
-        })
-    }
-
-    private func sendErrorResponse(_ connection: NWConnection, message: String) {
-        let body = "{\"error\":\"\(message)\"}"
-        var response = "HTTP/1.1 400 Bad Request\r\n"
-        response += "Content-Type: application/json\r\n"
-        response += "Content-Length: \(body.count)\r\n"
-        response += "Connection: close\r\n"
-        response += "\r\n"
-        response += body
-
-        sendResponse(connection, data: Data(response.utf8))
-    }
 }
 
 // MARK: - Command Types

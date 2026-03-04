@@ -14,7 +14,7 @@ info:
 
     ## Quick Start
     ```bash
-    ./bin/atl start
+    ./bin/atl-sim start
     curl http://localhost:9222/ping
     ```
 

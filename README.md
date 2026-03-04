@@ -29,7 +29,7 @@ openApp → snapshot → find/tapRef → screenshot if stuck
 ```bash
 git clone https://github.com/JordanCoin/Atl.git
 cd Atl/core
-./bin/atl start
+./bin/atl-sim start
 # API ready at http://localhost:9222
 ```
 
