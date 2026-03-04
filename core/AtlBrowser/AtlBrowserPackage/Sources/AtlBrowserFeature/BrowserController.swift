@@ -1637,6 +1637,113 @@ class BrowserController: ObservableObject {
         return try await evaluateJavaScript(script) as? [String: Any]
     }
 
+    // MARK: - Text-Based Click
+    
+    /// Click an element by its text content
+    /// Searches all interactive elements for matching text
+    /// Checks: textContent, value, title, aria-label, placeholder, aria-labelledby text
+    func clickByText(_ searchText: String, exact: Bool = false) async throws -> [String: Any] {
+        let escapedText = searchText.escapedForJS
+        
+        let script = """
+        (function() {
+            const searchText = '\(escapedText)'.toLowerCase();
+            const exact = \(exact);
+            
+            // Helper to get all possible text representations of an element
+            function getElementText(el) {
+                const texts = [
+                    el.textContent?.trim(),
+                    el.value,
+                    el.title,
+                    el.getAttribute('aria-label'),
+                    el.placeholder,
+                    el.alt
+                ];
+                
+                // Check aria-labelledby
+                const labelledBy = el.getAttribute('aria-labelledby');
+                if (labelledBy) {
+                    const labelEl = document.getElementById(labelledBy.split(' ')[0]);
+                    if (labelEl) texts.push(labelEl.textContent?.trim());
+                }
+                
+                // For inputs, check associated labels
+                if (el.id) {
+                    const label = document.querySelector('label[for="' + el.id + '"]');
+                    if (label) texts.push(label.textContent?.trim());
+                }
+                
+                return texts.filter(t => t).join(' ').toLowerCase();
+            }
+            
+            // Find all interactive elements
+            const selectors = 'a,button,input,select,textarea,[role=button],[role=link],[onclick],[tabindex]:not([tabindex="-1"])';
+            const elements = Array.from(document.querySelectorAll(selectors));
+            
+            // Also check elements with data-som-marked (already marked)
+            const marked = Array.from(document.querySelectorAll('[data-som-marked]'));
+            const allElements = [...new Set([...elements, ...marked])];
+            
+            // Find matching element
+            let match = null;
+            let matchLabel = null;
+            let matchedText = '';
+            
+            for (const el of allElements) {
+                // Skip invisible elements
+                const style = window.getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden') continue;
+                
+                const text = getElementText(el);
+                const isMatch = exact ? (text === searchText) : text.includes(searchText);
+                
+                if (isMatch) {
+                    match = el;
+                    matchLabel = el.getAttribute('data-som-marked');
+                    matchedText = text.substring(0, 100);
+                    break;
+                }
+            }
+            
+            if (!match) {
+                return { success: false, error: 'No element found with text: ' + searchText };
+            }
+            
+            // Scroll into view and click
+            match.scrollIntoView({ behavior: 'instant', block: 'center' });
+            
+            // Use different click methods depending on element type
+            if (match.tagName === 'INPUT' && (match.type === 'submit' || match.type === 'button')) {
+                match.click();
+            } else if (match.tagName === 'A' || match.tagName === 'BUTTON') {
+                match.click();
+            } else {
+                // Dispatch click event for other elements
+                match.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+            }
+            
+            return {
+                success: true,
+                text: matchedText,
+                tag: match.tagName.toLowerCase(),
+                id: match.id || null,
+                label: matchLabel ? parseInt(matchLabel) : null
+            };
+        })();
+        """
+        
+        guard let result = try await evaluateJavaScript(script) as? [String: Any] else {
+            throw BrowserError.javascriptError("clickByText failed")
+        }
+        
+        if let success = result["success"] as? Bool, !success {
+            throw BrowserError.elementNotFound(searchText)
+        }
+        
+        return result
+    }
+    
     // MARK: - ATL State Methods (Phase 1)
     
     /// Get ATL bootstrap state - check if tracking is active

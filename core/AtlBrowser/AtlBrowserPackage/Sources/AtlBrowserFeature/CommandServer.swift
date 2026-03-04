@@ -914,6 +914,79 @@ final class CommandServer {
             case "discoverAndMarkAll":
                 let elements = try await controller.discoverAndMarkAll()
                 result = ["elements": elements, "count": elements.count]
+            
+            // MARK: - Agent Snapshot (Vision + Text + Marks in one call)
+            
+            case "agentSnapshot":
+                // Wait for page to stabilize first
+                let stabilityMs = command.params?["stabilityMs"] as? Int ?? 1000
+                _ = try await controller.waitForDOMStable(stabilityMs: stabilityMs, timeout: 10)
+                
+                // Mark all elements
+                let elements = try await controller.markAllInteractiveElements()
+                
+                // Build compact text representation of marks
+                var marksText = ""
+                for el in elements {
+                    guard let label = el["label"] as? Int,
+                          let text = el["text"] as? String else { continue }
+                    let cleanText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        .replacingOccurrences(of: "\n", with: " ")
+                        .prefix(60)
+                    if !cleanText.isEmpty {
+                        let tag = (el["tagName"] as? String) ?? "?"
+                        marksText += "[\(label)] \(cleanText) <\(tag)>\n"
+                    }
+                }
+                
+                // Capture PDF
+                let includePdf = command.params?["pdf"] as? Bool ?? true
+                var pdfBase64: String? = nil
+                if includePdf {
+                    let pdfData = try await controller.takeFullPageScreenshot()
+                    pdfBase64 = pdfData.base64EncodedString()
+                }
+                
+                // Get page text (condensed)
+                let textScript = """
+                document.body.innerText.substring(0, 5000)
+                """
+                let pageText = try await controller.evaluateJavaScript(textScript) as? String ?? ""
+                
+                result = [
+                    "url": controller.currentURL?.absoluteString ?? "",
+                    "title": controller.pageTitle,
+                    "marks": marksText,
+                    "markCount": elements.count,
+                    "text": pageText,
+                    "pdf": pdfBase64 as Any
+                ]
+            
+            // Text-based click - find element by text content and click it
+            case "clickText":
+                guard let searchText = command.params?["text"] as? String else {
+                    return CommandResponse(id: command.id, success: false, result: nil, error: "Missing 'text' parameter")
+                }
+                
+                let exact = command.params?["exact"] as? Bool ?? false
+                let clickResult = try await controller.clickByText(searchText, exact: exact)
+                result = clickResult
+            
+            // Compact mark output - just label:text pairs
+            case "markCompact":
+                let elements = try await controller.markAllInteractiveElements()
+                var lines: [String] = []
+                for el in elements {
+                    guard let label = el["label"] as? Int,
+                          let text = el["text"] as? String else { continue }
+                    let cleanText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        .replacingOccurrences(of: "\n", with: " ")
+                        .prefix(50)
+                    if !cleanText.isEmpty {
+                        lines.append("\(label):\(cleanText)")
+                    }
+                }
+                result = ["marks": lines.joined(separator: "\n"), "count": elements.count]
 
             default:
                 return CommandResponse(id: command.id, success: false, result: nil, error: "Unknown command: \(command.method)")
