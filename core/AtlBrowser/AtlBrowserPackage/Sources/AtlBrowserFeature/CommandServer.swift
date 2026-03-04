@@ -874,6 +874,47 @@ final class CommandServer {
                     }
                 }
 
+            // MARK: - ATL State Commands (Phase 1)
+            
+            case "getATLState":
+                if let state = try await controller.getATLState() {
+                    result = state
+                } else {
+                    result = ["ready": false, "error": "ATL bootstrap not initialized"]
+                }
+            
+            case "clearATLState":
+                try await controller.clearATLState()
+                result = ["cleared": true]
+            
+            case "getRecentMutations":
+                let limit = command.params?["limit"] as? Int ?? 20
+                let mutations = try await controller.getRecentMutations(limit: limit)
+                result = ["mutations": mutations, "count": mutations.count]
+            
+            case "getRecentNetworkRequests":
+                let limit = command.params?["limit"] as? Int ?? 20
+                let requests = try await controller.getRecentNetworkRequests(limit: limit)
+                result = ["requests": requests, "count": requests.count]
+            
+            case "getJSErrors":
+                let errors = try await controller.getJSErrors()
+                result = ["errors": errors, "count": errors.count]
+            
+            case "waitForDOMStable":
+                let stabilityMs = command.params?["stabilityMs"] as? Int ?? 500
+                let timeout = command.params?["timeout"] as? TimeInterval ?? 10
+                let stable = try await controller.waitForDOMStable(stabilityMs: stabilityMs, timeout: timeout)
+                result = ["stable": stable, "stabilityMs": stabilityMs]
+            
+            case "discoverAll":
+                let elements = try await controller.discoverAllElements()
+                result = ["elements": elements, "count": elements.count]
+            
+            case "discoverAndMarkAll":
+                let elements = try await controller.discoverAndMarkAll()
+                result = ["elements": elements, "count": elements.count]
+
             default:
                 return CommandResponse(id: command.id, success: false, result: nil, error: "Unknown command: \(command.method)")
             }

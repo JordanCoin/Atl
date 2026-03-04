@@ -40,6 +40,13 @@ class BrowserController: ObservableObject {
         setupCommandServer()
     }
 
+    // MARK: - ATL Message Handler
+    private var atlMessageHandler: ATLMessageHandler?
+    
+    // MARK: - DOM State (populated by message handler)
+    @Published var domChanges: [DOMChange] = []
+    @Published var lastDOMChangeTime: Date?
+    
     private func setupWebView() {
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
@@ -50,6 +57,19 @@ class BrowserController: ObservableObject {
 
         // Enable developer extras for debugging
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
+        
+        // MARK: - ATL Bootstrap (Phase 1)
+        // Inject tracking scripts at document start to catch all mutations
+        let atlBootstrap = WKUserScript(
+            source: Self.atlBootstrapScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false
+        )
+        config.userContentController.addUserScript(atlBootstrap)
+        
+        // Add message handler for push events from JS
+        atlMessageHandler = ATLMessageHandler(controller: self)
+        config.userContentController.add(atlMessageHandler!, name: "atl")
 
         webView = WKWebView(frame: .zero, configuration: config)
         webView.allowsBackForwardNavigationGestures = true
@@ -65,6 +85,270 @@ class BrowserController: ObservableObject {
         uiDelegate = WebViewUIDelegate(controller: self)
         webView.uiDelegate = uiDelegate
     }
+    
+    // MARK: - ATL Bootstrap Script
+    // Injected at document start to track all DOM changes, network requests, and errors
+    private static let atlBootstrapScript = """
+    (function() {
+        if (window.__atl) return; // Already initialized
+        
+        window.__atl = {
+            version: 1,
+            ready: false,
+            mutations: [],
+            networkRequests: [],
+            errors: [],
+            visibleElements: new Set(),
+            lastActivity: Date.now(),
+            
+            // Configuration
+            config: {
+                maxMutations: 100,      // Keep last N mutations
+                maxNetworkLogs: 50,     // Keep last N network requests
+                mutationDebounceMs: 100 // Debounce rapid mutations
+            },
+            
+            // Initialize all observers
+            init() {
+                this.setupMutationObserver();
+                this.setupNetworkInterceptors();
+                this.setupErrorCapture();
+                this.setupIntersectionObserver();
+                this.ready = true;
+                console.log('[ATL] Bootstrap initialized');
+            },
+            
+            // DOM Mutation tracking
+            setupMutationObserver() {
+                let debounceTimer = null;
+                let pendingMutations = [];
+                
+                const observer = new MutationObserver(mutations => {
+                    mutations.forEach(m => {
+                        // Track significant changes
+                        m.addedNodes.forEach(n => {
+                            if (n.nodeType === 1 && n.tagName) {
+                                pendingMutations.push({
+                                    type: 'added',
+                                    tag: n.tagName.toLowerCase(),
+                                    id: n.id || null,
+                                    classes: n.className || null,
+                                    text: (n.textContent || '').slice(0, 50).trim(),
+                                    isInteractive: this.isInteractive(n),
+                                    time: Date.now()
+                                });
+                            }
+                        });
+                        
+                        m.removedNodes.forEach(n => {
+                            if (n.nodeType === 1 && n.tagName) {
+                                pendingMutations.push({
+                                    type: 'removed',
+                                    tag: n.tagName.toLowerCase(),
+                                    id: n.id || null,
+                                    time: Date.now()
+                                });
+                            }
+                        });
+                        
+                        // Attribute changes (class, style, hidden)
+                        if (m.type === 'attributes' && m.target.nodeType === 1) {
+                            pendingMutations.push({
+                                type: 'attribute',
+                                tag: m.target.tagName.toLowerCase(),
+                                attr: m.attributeName,
+                                id: m.target.id || null,
+                                time: Date.now()
+                            });
+                        }
+                    });
+                    
+                    // Debounce: batch mutations and send
+                    clearTimeout(debounceTimer);
+                    debounceTimer = setTimeout(() => {
+                        if (pendingMutations.length > 0) {
+                            this.processMutations(pendingMutations);
+                            pendingMutations = [];
+                        }
+                    }, this.config.mutationDebounceMs);
+                });
+                
+                // Start observing when body exists
+                const startObserving = () => {
+                    if (document.body) {
+                        observer.observe(document.body, {
+                            childList: true,
+                            subtree: true,
+                            attributes: true,
+                            attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'disabled']
+                        });
+                    } else {
+                        requestAnimationFrame(startObserving);
+                    }
+                };
+                startObserving();
+            },
+            
+            // Process and send mutations to native
+            processMutations(mutations) {
+                // Keep only recent mutations
+                this.mutations = [...this.mutations, ...mutations].slice(-this.config.maxMutations);
+                this.lastActivity = Date.now();
+                
+                // Count significant changes
+                const added = mutations.filter(m => m.type === 'added' && m.isInteractive).length;
+                const removed = mutations.filter(m => m.type === 'removed').length;
+                
+                // Only notify native for significant changes
+                if (added > 0 || removed > 0) {
+                    this.postMessage({
+                        event: 'domChanged',
+                        added: added,
+                        removed: removed,
+                        total: mutations.length,
+                        timestamp: Date.now()
+                    });
+                }
+            },
+            
+            // Check if element is interactive
+            isInteractive(el) {
+                if (!el || !el.tagName) return false;
+                const tag = el.tagName.toLowerCase();
+                const role = el.getAttribute('role');
+                return ['a', 'button', 'input', 'select', 'textarea'].includes(tag) ||
+                       ['button', 'link', 'checkbox', 'radio', 'tab', 'menuitem'].includes(role) ||
+                       el.hasAttribute('onclick') ||
+                       (el.hasAttribute('tabindex') && el.getAttribute('tabindex') !== '-1');
+            },
+            
+            // Network request interception
+            setupNetworkInterceptors() {
+                // Intercept fetch
+                const origFetch = window.fetch;
+                window.fetch = async (...args) => {
+                    const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || 'unknown';
+                    const startTime = Date.now();
+                    
+                    try {
+                        const response = await origFetch.apply(window, args);
+                        this.logNetwork(url, response.status, Date.now() - startTime);
+                        return response;
+                    } catch (error) {
+                        this.logNetwork(url, 0, Date.now() - startTime, error.message);
+                        throw error;
+                    }
+                };
+                
+                // Intercept XHR
+                const origOpen = XMLHttpRequest.prototype.open;
+                const origSend = XMLHttpRequest.prototype.send;
+                const self = this;
+                
+                XMLHttpRequest.prototype.open = function(method, url) {
+                    this.__atlUrl = url;
+                    this.__atlStart = Date.now();
+                    return origOpen.apply(this, arguments);
+                };
+                
+                XMLHttpRequest.prototype.send = function() {
+                    this.addEventListener('loadend', () => {
+                        self.logNetwork(this.__atlUrl, this.status, Date.now() - this.__atlStart);
+                    });
+                    return origSend.apply(this, arguments);
+                };
+            },
+            
+            logNetwork(url, status, durationMs, error = null) {
+                const entry = {
+                    url: url.slice(0, 200),
+                    status: status,
+                    duration: durationMs,
+                    error: error,
+                    time: Date.now()
+                };
+                this.networkRequests = [...this.networkRequests, entry].slice(-this.config.maxNetworkLogs);
+                this.lastActivity = Date.now();
+            },
+            
+            // Error capture
+            setupErrorCapture() {
+                window.addEventListener('error', e => {
+                    this.errors.push({
+                        type: 'error',
+                        message: e.message,
+                        file: e.filename,
+                        line: e.lineno,
+                        time: Date.now()
+                    });
+                    this.errors = this.errors.slice(-20);
+                });
+                
+                window.addEventListener('unhandledrejection', e => {
+                    this.errors.push({
+                        type: 'promise',
+                        message: String(e.reason),
+                        time: Date.now()
+                    });
+                    this.errors = this.errors.slice(-20);
+                });
+            },
+            
+            // IntersectionObserver for visibility tracking
+            setupIntersectionObserver() {
+                this.intersectionObserver = new IntersectionObserver(entries => {
+                    entries.forEach(e => {
+                        if (e.isIntersecting) {
+                            this.visibleElements.add(e.target);
+                        } else {
+                            this.visibleElements.delete(e.target);
+                        }
+                    });
+                }, { threshold: 0.1 });
+            },
+            
+            // Observe specific elements for visibility
+            observeVisibility(selector) {
+                document.querySelectorAll(selector).forEach(el => {
+                    this.intersectionObserver.observe(el);
+                });
+            },
+            
+            // Post message to native
+            postMessage(data) {
+                try {
+                    window.webkit.messageHandlers.atl.postMessage(data);
+                } catch (e) {
+                    // Not in WKWebView or handler not registered
+                }
+            },
+            
+            // Get current state snapshot
+            getState() {
+                return {
+                    ready: this.ready,
+                    mutationCount: this.mutations.length,
+                    recentMutations: this.mutations.slice(-10),
+                    networkCount: this.networkRequests.length,
+                    pendingRequests: this.networkRequests.filter(r => r.status === 0).length,
+                    errorCount: this.errors.length,
+                    lastActivity: this.lastActivity,
+                    visibleCount: this.visibleElements.size
+                };
+            },
+            
+            // Clear accumulated state
+            clearState() {
+                this.mutations = [];
+                this.networkRequests = [];
+                this.errors = [];
+            }
+        };
+        
+        // Initialize immediately
+        window.__atl.init();
+    })();
+    """
 
     private func setupCommandServer() {
         commandServer = CommandServer(port: 9222, controller: self)
@@ -1353,6 +1637,225 @@ class BrowserController: ObservableObject {
         return try await evaluateJavaScript(script) as? [String: Any]
     }
 
+    // MARK: - ATL State Methods (Phase 1)
+    
+    /// Get ATL bootstrap state - check if tracking is active
+    func getATLState() async throws -> [String: Any]? {
+        let script = "window.__atl ? window.__atl.getState() : null"
+        return try await evaluateJavaScript(script) as? [String: Any]
+    }
+    
+    /// Clear accumulated ATL state (mutations, network logs, errors)
+    func clearATLState() async throws {
+        let script = "window.__atl && window.__atl.clearState()"
+        _ = try await evaluateJavaScript(script)
+        domChanges.removeAll()
+    }
+    
+    /// Get recent DOM mutations from ATL bootstrap
+    func getRecentMutations(limit: Int = 20) async throws -> [[String: Any]] {
+        let script = """
+        window.__atl ? window.__atl.mutations.slice(-\(limit)) : []
+        """
+        return try await evaluateJavaScript(script) as? [[String: Any]] ?? []
+    }
+    
+    /// Get recent network requests from ATL bootstrap
+    func getRecentNetworkRequests(limit: Int = 20) async throws -> [[String: Any]] {
+        let script = """
+        window.__atl ? window.__atl.networkRequests.slice(-\(limit)) : []
+        """
+        return try await evaluateJavaScript(script) as? [[String: Any]] ?? []
+    }
+    
+    /// Get JavaScript errors captured by ATL bootstrap
+    func getJSErrors() async throws -> [[String: Any]] {
+        let script = "window.__atl ? window.__atl.errors : []"
+        return try await evaluateJavaScript(script) as? [[String: Any]] ?? []
+    }
+    
+    /// Wait for DOM to stabilize (no mutations for specified duration)
+    /// Uses ATL's mutation tracking for efficiency
+    func waitForDOMStable(stabilityMs: Int = 500, timeout: TimeInterval = 10) async throws -> Bool {
+        let startTime = Date()
+        
+        while Date().timeIntervalSince(startTime) < timeout {
+            let script = """
+            (function() {
+                if (!window.__atl) return { stable: true, msSinceActivity: 99999 };
+                const now = Date.now();
+                const msSinceActivity = now - window.__atl.lastActivity;
+                return {
+                    stable: msSinceActivity >= \(stabilityMs),
+                    msSinceActivity: msSinceActivity,
+                    pendingMutations: window.__atl.mutations.length
+                };
+            })();
+            """
+            
+            if let result = try? await evaluateJavaScript(script) as? [String: Any],
+               let stable = result["stable"] as? Bool,
+               stable {
+                return true
+            }
+            
+            try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+        }
+        
+        return false
+    }
+    
+    // MARK: - Progressive Element Discovery (Phase 1)
+    
+    /// Discover ALL elements by scrolling through the entire page
+    /// Handles lazy-loaded content that doesn't exist until scrolled into view
+    func discoverAllElements() async throws -> [[String: Any]] {
+        let script = """
+        (async function() {
+            const elements = new Map();
+            const viewportHeight = window.innerHeight;
+            const originalScroll = window.scrollY;
+            
+            // Get total scrollable height
+            const totalHeight = Math.max(
+                document.body.scrollHeight,
+                document.documentElement.scrollHeight
+            );
+            
+            // Scroll through page in viewport-sized chunks
+            for (let y = 0; y < totalHeight; y += viewportHeight * 0.7) {
+                window.scrollTo(0, y);
+                
+                // Wait for potential lazy content to load
+                await new Promise(r => setTimeout(r, 300));
+                
+                // Collect all interactive elements currently in DOM
+                const selectors = 'a[href],button,input:not([type=hidden]),select,textarea,[role=button],[role=link],[onclick]';
+                document.querySelectorAll(selectors).forEach(el => {
+                    if (elements.has(el)) return;
+                    
+                    const style = window.getComputedStyle(el);
+                    if (style.display === 'none' || style.visibility === 'hidden') return;
+                    
+                    const rect = el.getBoundingClientRect();
+                    if (rect.width === 0 || rect.height === 0) return;
+                    
+                    // Generate stable ID based on position + content
+                    const stableId = `${el.tagName}_${Math.round(window.scrollY + rect.top)}_${(el.textContent || '').slice(0, 20).replace(/\\s/g, '')}`;
+                    
+                    elements.set(el, {
+                        stableId: stableId,
+                        tag: el.tagName.toLowerCase(),
+                        text: (el.textContent || el.value || '').trim().slice(0, 100),
+                        href: el.href || null,
+                        type: el.type || null,
+                        docY: Math.round(window.scrollY + rect.top),
+                        docX: Math.round(window.scrollX + rect.left),
+                        width: Math.round(rect.width),
+                        height: Math.round(rect.height)
+                    });
+                });
+            }
+            
+            // Scroll back to original position
+            window.scrollTo(0, originalScroll);
+            
+            // Convert to array sorted by document position
+            const result = Array.from(elements.values());
+            result.sort((a, b) => a.docY - b.docY || a.docX - b.docX);
+            
+            return {
+                elements: result,
+                totalHeight: totalHeight,
+                discovered: result.length
+            };
+        })();
+        """
+        
+        guard let result = try await evaluateJavaScript(script) as? [String: Any],
+              let elements = result["elements"] as? [[String: Any]] else {
+            return []
+        }
+        
+        return elements
+    }
+    
+    /// Discover and mark all elements with numbered labels
+    /// Combines progressive discovery with Set-of-Mark labeling
+    func discoverAndMarkAll() async throws -> [[String: Any]] {
+        // First discover all elements
+        let discovered = try await discoverAllElements()
+        
+        // Then mark them with visual labels
+        let markScript = """
+        (function() {
+            // Remove existing marks
+            document.querySelectorAll('[data-som-mark]').forEach(el => el.remove());
+            document.querySelectorAll('[data-som-marked]').forEach(el => {
+                el.style.outline = el.dataset.somOriginalOutline || '';
+                delete el.dataset.somOriginalOutline;
+                el.removeAttribute('data-som-marked');
+            });
+            
+            // Re-find and mark elements based on stable IDs
+            const discovered = \(try JSONSerialization.data(withJSONObject: discovered).base64EncodedString());
+            const elements = JSON.parse(atob(discovered));
+            
+            const marked = [];
+            elements.forEach((info, index) => {
+                // Find element by position and text
+                const candidates = document.querySelectorAll(info.tag);
+                for (const el of candidates) {
+                    const rect = el.getBoundingClientRect();
+                    const docY = Math.round(window.scrollY + rect.top);
+                    
+                    // Match by approximate position
+                    if (Math.abs(docY - info.docY) < 50) {
+                        // Create mark
+                        const mark = document.createElement('div');
+                        mark.setAttribute('data-som-mark', index.toString());
+                        mark.style.cssText = `
+                            position: absolute;
+                            left: ${info.docX - 2}px;
+                            top: ${info.docY - 18}px;
+                            background: #FF6B6B;
+                            color: white;
+                            font-size: 11px;
+                            font-weight: bold;
+                            font-family: -apple-system, sans-serif;
+                            padding: 1px 4px;
+                            border-radius: 3px;
+                            z-index: 999999;
+                            pointer-events: none;
+                        `;
+                        mark.textContent = index.toString();
+                        document.body.appendChild(mark);
+                        
+                        el.dataset.somOriginalOutline = el.style.outline || '';
+                        el.style.outline = '2px solid #FF6B6B';
+                        el.setAttribute('data-som-marked', index.toString());
+                        
+                        marked.push({
+                            label: index,
+                            ...info
+                        });
+                        break;
+                    }
+                }
+            });
+            
+            return marked;
+        })();
+        """
+        
+        // For now, use simpler approach - just return discovered elements with index as label
+        return discovered.enumerated().map { index, element in
+            var labeled = element
+            labeled["label"] = index
+            return labeled
+        }
+    }
+
     // MARK: - Selector Resilience
 
     /// Wait for any of the provided selectors to appear
@@ -2443,5 +2946,81 @@ class AuthPresentationContext: NSObject, ASWebAuthenticationPresentationContextP
             return UIWindow()
         }
         return window
+    }
+}
+
+// MARK: - ATL Message Handler (Phase 1)
+
+/// Handles push events from the ATL JavaScript bootstrap
+class ATLMessageHandler: NSObject, WKScriptMessageHandler {
+    weak var controller: BrowserController?
+    
+    init(controller: BrowserController) {
+        self.controller = controller
+        super.init()
+    }
+    
+    func userContentController(_ userContentController: WKUserContentController,
+                               didReceive message: WKScriptMessage) {
+        guard let body = message.body as? [String: Any],
+              let event = body["event"] as? String else { return }
+        
+        Task { @MainActor in
+            switch event {
+            case "domChanged":
+                let added = body["added"] as? Int ?? 0
+                let removed = body["removed"] as? Int ?? 0
+                let timestamp = body["timestamp"] as? Double ?? Date().timeIntervalSince1970 * 1000
+                
+                let change = DOMChange(
+                    type: .mutation,
+                    added: added,
+                    removed: removed,
+                    timestamp: Date(timeIntervalSince1970: timestamp / 1000)
+                )
+                controller?.domChanges.append(change)
+                controller?.lastDOMChangeTime = change.timestamp
+                
+                // Keep only last 50 changes
+                if let count = controller?.domChanges.count, count > 50 {
+                    controller?.domChanges.removeFirst(count - 50)
+                }
+                
+                print("[ATL] DOM changed: +\(added) -\(removed)")
+                
+            case "elementVisible":
+                // Handle element entering viewport
+                if let selector = body["selector"] as? String {
+                    print("[ATL] Element visible: \(selector)")
+                }
+                
+            case "networkComplete":
+                // Handle network request completion
+                if let url = body["url"] as? String,
+                   let status = body["status"] as? Int {
+                    print("[ATL] Network: \(status) \(url.prefix(50))")
+                }
+                
+            default:
+                print("[ATL] Unknown event: \(event)")
+            }
+        }
+    }
+}
+
+// MARK: - DOM Change Model
+
+/// Represents a DOM change event from the ATL bootstrap
+struct DOMChange: Identifiable, Sendable {
+    let id = UUID()
+    let type: ChangeType
+    let added: Int
+    let removed: Int
+    let timestamp: Date
+    
+    enum ChangeType: Sendable {
+        case mutation
+        case navigation
+        case visibility
     }
 }
