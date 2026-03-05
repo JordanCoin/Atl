@@ -1,4 +1,5 @@
 import Foundation
+import PDFKit
 import WebKit
 import Combine
 import AuthenticationServices
@@ -58,6 +59,17 @@ class BrowserController: ObservableObject {
         // Enable developer extras for debugging
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
         
+        // MARK: - Stealth (must run before anything else)
+        // Mask WKWebView fingerprint so sites see us as real Mobile Safari.
+        // WKWebView exposes window.webkit.messageHandlers which real Safari doesn't have,
+        // and real Safari has window.safari which WKWebView lacks.
+        let stealthScript = WKUserScript(
+            source: Self.stealthScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false
+        )
+        config.userContentController.addUserScript(stealthScript)
+
         // MARK: - ATL Bootstrap (Phase 1)
         // Inject tracking scripts at document start to catch all mutations
         let atlBootstrap = WKUserScript(
@@ -86,6 +98,49 @@ class BrowserController: ObservableObject {
         webView.uiDelegate = uiDelegate
     }
     
+    // MARK: - Stealth Script
+    // Hides WKWebView fingerprint from bot detection.
+    // Real Safari: window.safari exists, window.webkit.messageHandlers does NOT.
+    // WKWebView: window.webkit.messageHandlers exists, window.safari does NOT.
+    // We save our messageHandlers reference internally, then delete the external-facing one.
+    private static let stealthScript = """
+    (function() {
+        'use strict';
+        // Save real messageHandlers before hiding them
+        var _handlers = window.webkit && window.webkit.messageHandlers;
+
+        // Hide messageHandlers from bot detection.
+        // messageHandlers lives on the webkit prototype (configurable: true),
+        // so we redefine it there to return undefined.
+        if (window.webkit && _handlers) {
+            try {
+                var proto = Object.getPrototypeOf(window.webkit);
+                Object.defineProperty(proto, 'messageHandlers', {
+                    get: function() { return undefined; },
+                    enumerable: false,
+                    configurable: false
+                });
+            } catch(e) {}
+        }
+
+        // Provide window.safari like real Mobile Safari
+        if (typeof window.safari === 'undefined') {
+            try {
+                Object.defineProperty(window, 'safari', {
+                    value: { pushNotification: { toString: function() { return '[object SafariRemoteNotification]'; } } },
+                    writable: false,
+                    configurable: false
+                });
+            } catch(e) {}
+        }
+
+        // Private channel for ATL scripts — not discoverable by page JS
+        window.__atl_post = function(name, data) {
+            try { _handlers[name].postMessage(data); } catch(e) {}
+        };
+    })();
+    """
+
     // MARK: - ATL Bootstrap Script
     // Injected at document start to track all DOM changes, network requests, and errors
     private static let atlBootstrapScript = """
@@ -314,12 +369,16 @@ class BrowserController: ObservableObject {
                 });
             },
             
-            // Post message to native
+            // Post message to native (via stealth channel)
             postMessage(data) {
                 try {
-                    window.webkit.messageHandlers.atl.postMessage(data);
+                    if (window.__atl_post) {
+                        window.__atl_post('atl', data);
+                    } else if (window.webkit && window.webkit.messageHandlers) {
+                        window.webkit.messageHandlers.atl.postMessage(data);
+                    }
                 } catch (e) {
-                    // Not in WKWebView or handler not registered
+                    // Handler not available
                 }
             },
             
@@ -512,9 +571,13 @@ class BrowserController: ObservableObject {
                 const origClose = window.close;
                 window.close = function() {
                     console.log('OAuth window.close intercepted');
-                    window.webkit.messageHandlers.oauthComplete.postMessage({
-                        type: 'window_close'
-                    });
+                    try {
+                        if (window.__atl_post) {
+                            window.__atl_post('oauthComplete', { type: 'window_close' });
+                        } else {
+                            window.webkit.messageHandlers.oauthComplete.postMessage({ type: 'window_close' });
+                        }
+                    } catch(e) {}
                     // Don't actually close - let our handler do it
                 };
             })();
@@ -958,6 +1021,20 @@ class BrowserController: ObservableObject {
                 }
             }
         }
+    }
+
+    func extractPDFText() async throws -> String {
+        let pdfData = try await takeFullPageScreenshot()
+        guard let pdfDoc = PDFDocument(data: pdfData) else {
+            throw BrowserError.screenshotFailed
+        }
+        var text = ""
+        for i in 0..<pdfDoc.pageCount {
+            if let page = pdfDoc.page(at: i) {
+                text += page.string ?? ""
+            }
+        }
+        return text
     }
 
     func takeScreenshot(selector: String) async throws -> Data {

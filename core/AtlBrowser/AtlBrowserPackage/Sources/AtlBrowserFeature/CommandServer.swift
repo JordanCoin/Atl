@@ -862,6 +862,10 @@ final class CommandServer {
                     "pdf": pdfBase64 as Any
                 ]
             
+            case "pdfText":
+                let pdfText = try await controller.extractPDFText()
+                result = ["text": pdfText]
+
             // Text-based click - find element by text content and click it
             case "clickText":
                 guard let searchText = command.params?["text"] as? String else {
