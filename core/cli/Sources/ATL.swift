@@ -25,6 +25,7 @@ struct ATL: ParsableCommand {
             Reload.self,
             Back.self,
             Dataset.self,
+            Classify.self,
         ],
         defaultSubcommand: Ping.self
     )
@@ -631,6 +632,143 @@ struct Back: ParsableCommand {
             let result = try client.call("waitForDOMStable", params: ["stabilityMs": 1000, "timeoutMs": 8000])
             let stable = result["stable"] as? Bool ?? false
             print(stable ? "✓ DOM stable" : "⚠ Timeout waiting for DOM")
+        }
+    }
+}
+
+// MARK: - Page Classifier
+
+struct Classify: ParsableCommand {
+    static let configuration = CommandConfiguration(abstract: "Classify the current page type (cart, product, error, etc.)")
+
+    @Option(name: .shortAndLong, help: "Server port")
+    var port: Int = 9222
+
+    @Flag(name: .long, help: "Output as JSON")
+    var json: Bool = false
+
+    /// Page type rules. Each rule has:
+    /// - required: ALL must match
+    /// - boost: each match adds to score
+    /// - reject: any match disqualifies
+    /// - minScore: minimum total score to qualify (required=3pts each, boost=2pts each)
+    private static let rules: [(type: String, required: [String], boost: [String], reject: [String], minScore: Int)] = [
+        (
+            type: "error",
+            required: ["something went wrong"],
+            boost: ["oops", "refresh", "try again", "error"],
+            reject: [],
+            minScore: 3
+        ),
+        (
+            type: "empty_cart",
+            required: ["cart is empty"],
+            boost: ["no items", "0 items", "start shopping", "your cart", "empty"],
+            reject: ["subtotal", "checkout"],
+            minScore: 3
+        ),
+        (
+            type: "cart",
+            required: ["subtotal"],
+            boost: ["cart", "checkout", "proceed to checkout", "quantity", "remove", "total", "order summary", "estimated total", "shipping"],
+            reject: [],
+            minScore: 5
+        ),
+        (
+            type: "product",
+            required: ["add to cart"],
+            boost: ["buy now", "in stock", "reviews", "description", "ships from", "sold by", "quantity", "price"],
+            reject: ["subtotal", "proceed to checkout"],
+            minScore: 5
+        ),
+        (
+            type: "login",
+            required: ["sign in"],
+            boost: ["password", "email address", "create account", "forgot", "log in", "username"],
+            reject: ["subtotal", "add to cart", "shop by", "deals", "browse"],
+            minScore: 7  // High bar — "sign in" alone (3pts) isn't enough
+        ),
+        (
+            type: "category",
+            required: [],
+            boost: ["results", "filter", "sort by", "showing", "department", "brand", "price range"],
+            reject: ["add to cart", "subtotal"],
+            minScore: 6
+        ),
+        (
+            type: "search",
+            required: [],
+            boost: ["results for", "search results", "showing results", "no results"],
+            reject: ["subtotal"],
+            minScore: 4
+        ),
+        (
+            type: "homepage",
+            required: [],
+            boost: ["shop by", "deals", "trending", "popular", "categories", "browse", "top sellers", "best sellers", "new arrivals", "shop now", "subscribe & save", "inspired by", "top of page", "join prime", "related to"],
+            reject: ["subtotal", "proceed to checkout"],
+            minScore: 6
+        ),
+    ]
+
+    func run() throws {
+        let client = ATLClient(port: port)
+        let result = try client.call("pdfText", params: [:])
+        let text = (result["text"] as? String ?? "").lowercased()
+
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if json {
+                print(encodeJSON(["type": "blank", "confidence": "high", "signals": "no text content"]))
+            } else {
+                print("blank — no text content")
+            }
+            return
+        }
+
+        var bestType = "other"
+        var bestScore = 0
+        var bestSignals: [String] = []
+
+        for rule in Self.rules {
+            // Check required terms — all must be present
+            let hasRequired = rule.required.allSatisfy { text.contains($0) }
+            guard hasRequired else { continue }
+
+            // Check reject terms — any present disqualifies
+            let hasReject = rule.reject.contains { text.contains($0) }
+            if hasReject { continue }
+
+            // Score: required=3pts each, boost=2pts each
+            var score = rule.required.count * 3
+            var signals = rule.required
+
+            for term in rule.boost {
+                if text.contains(term) {
+                    score += 2
+                    signals.append(term)
+                }
+            }
+
+            // Must meet minimum score threshold
+            guard score >= rule.minScore else { continue }
+
+            if score > bestScore {
+                bestScore = score
+                bestType = rule.type
+                bestSignals = signals
+            }
+        }
+
+        let confidence = bestScore >= 8 ? "high" : bestScore >= 5 ? "medium" : "low"
+
+        if json {
+            print(encodeJSON([
+                "type": bestType,
+                "confidence": confidence,
+                "signals": bestSignals.joined(separator: ", ")
+            ]))
+        } else {
+            print("\(bestType) (\(confidence)) — \(bestSignals.joined(separator: ", "))")
         }
     }
 }
